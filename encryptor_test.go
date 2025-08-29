@@ -2,7 +2,6 @@ package encryptor
 
 import (
 	"encoding/hex"
-	"fmt"
 	"testing"
 )
 
@@ -99,7 +98,6 @@ func TestInputValidator(t *testing.T) {
 
 	e.PassKey = []byte("12345678901234567890123456789012345678901234567890") // 50 chars
 	_, err = e.validateInputPassKey()
-	fmt.Printf("err: %v\n", err)
 	if err != nil && err.Error() != "pass key exceeds maximum length of 32 characters" {
 		t.Errorf("expecting max length error")
 	}
