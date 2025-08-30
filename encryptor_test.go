@@ -1,6 +1,7 @@
 package encryptor
 
 import (
+	"bytes"
 	"encoding/hex"
 	"testing"
 )
@@ -60,6 +61,15 @@ func TestGeneratePassKey(t *testing.T) {
 	if len(e.PassKey) != 32 {
 		t.Errorf("invalid passkey length")
 	}
+
+	e2 := Service{}
+	_, err = e2.Encrypt([]byte("test"))
+	if err != nil {
+		t.Error(err)
+	}
+	if len(e2.PassKey) != 32 {
+		t.Errorf("invalid passkey length")
+	}
 }
 
 func TestPadPassword(t *testing.T) {
@@ -100,5 +110,33 @@ func TestInputValidator(t *testing.T) {
 	_, err = e.validateInputPassKey()
 	if err != nil && err.Error() != "pass key exceeds maximum length of 32 characters" {
 		t.Errorf("expecting max length error")
+	}
+}
+
+func TestGenerateServiceFromFile(t *testing.T) {
+	secureMsg := "very secure message"
+
+	originalService := Service{}
+	dataBytes, err := originalService.Encrypt([]byte(secureMsg))
+	if err != nil {
+		t.Error(err)
+	}
+
+	createdService, err := GetEncryptionServiceFromFile("")
+	if err != nil {
+		t.Error(err)
+	}
+
+	if !bytes.Equal(originalService.PassKey, createdService.PassKey) {
+		t.Errorf("keys do not match")
+	}
+
+	dataBytes, err = createdService.Decrypt(dataBytes)
+	if err != nil {
+		t.Error(err)
+	}
+
+	if string(dataBytes) != secureMsg {
+		t.Errorf("failure to decrypt original message")
 	}
 }

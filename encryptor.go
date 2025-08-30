@@ -10,14 +10,14 @@ import (
 )
 
 type Encryptor interface {
-	// Encrypt input bytes using AES-256
+	// Encrypt input bytes using AES-256, returning encrypted bytes or error
 	Encrypt(data []byte) ([]byte, error)
 
-	// Decrypt intput bytes
+	// Decrypt intput bytes, returning decrypted bytes or error
 	Decrypt(data []byte) ([]byte, error)
 
 	// A helper method for generating a maximum length, randomized passkey
-	GeneratePassKey() ([]byte, error)
+	GeneratePassKey() error
 }
 
 type Service struct {
@@ -27,6 +27,7 @@ type Service struct {
 }
 
 var passwordByteLength int = 32
+var passKeyFileName string = "passkey.txt"
 
 func (s *Service) Encrypt(data []byte) ([]byte, error) {
 	passKey, err := s.validateInputPassKey()
@@ -122,9 +123,40 @@ func (s *Service) GeneratePassKey() error {
 	encodedPassKey := make([]byte, hex.EncodedLen(len(passKey)))
 	hex.Encode(encodedPassKey, passKey)
 
-	if err := os.WriteFile("passkey.txt", encodedPassKey, 0644); err != nil {
+	if err := os.WriteFile(passKeyFileName, encodedPassKey, 0644); err != nil {
 		return fmt.Errorf("error while writing generated passkey to file: %s", err)
 	}
 
 	return nil
+}
+
+// Create Encryption service from passkey file
+// Will check current directory or provided file path (optional)
+func GetEncryptionServiceFromFile(filePath string) (*Service, error) {
+	path := passKeyFileName
+	if filePath != "" {
+		path = filePath
+	}
+
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil, fmt.Errorf("passkey file does not exist in current directory")
+	}
+
+	bytes, err := os.ReadFile(passKeyFileName)
+	if err != nil {
+		return nil, fmt.Errorf("failure to read passkey file content with error: %s", err)
+	}
+
+	passKeyBytes := make([]byte, hex.DecodedLen(len(bytes)))
+	numBytesDecoded, err := hex.Decode(passKeyBytes, bytes)
+
+	if err != nil {
+		return nil, fmt.Errorf("failure to read passkey bytes with error: %s", err)
+	} else if numBytesDecoded != hex.DecodedLen(len(bytes)) {
+		return nil, fmt.Errorf("failure to decode all bytes with error: %s", err)
+	}
+
+	return &Service{
+		PassKey: passKeyBytes,
+	}, nil
 }
