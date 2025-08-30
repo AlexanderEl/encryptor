@@ -3,6 +3,7 @@ package encryptor
 import (
 	"bytes"
 	"encoding/hex"
+	"os"
 	"testing"
 )
 
@@ -138,5 +139,35 @@ func TestGenerateServiceFromFile(t *testing.T) {
 
 	if string(dataBytes) != secureMsg {
 		t.Errorf("failure to decrypt original message")
+	}
+}
+
+func TestGenerateServiceFromFileDifferentFileName(t *testing.T) {
+	secureMsg := "very secure message"
+
+	service := Service{}
+	encryptedData, err := service.Encrypt([]byte(secureMsg))
+	if err != nil {
+		t.Error(err)
+	}
+
+	oldName, newFileName := "passkey.txt", "secureFile.txt"
+	err = os.Rename(oldName, newFileName)
+	if err != nil {
+		t.Error(err)
+	}
+
+	newServicePtr, err := GetEncryptionServiceFromFile(newFileName)
+	if err != nil {
+		t.Error(err)
+	}
+
+	decryptedData, err := newServicePtr.Decrypt(encryptedData)
+	if err != nil {
+		t.Error(err)
+	}
+
+	if string(decryptedData) != secureMsg {
+		t.Errorf("failure to decrypt data")
 	}
 }

@@ -18,11 +18,13 @@ type Encryptor interface {
 
 	// A helper method for generating a maximum length, randomized passkey
 	GeneratePassKey() error
+
+	GetEncryptionServiceFromFile(filePath string) (*Service, error)
 }
 
 type Service struct {
 	// The passKey key that will be used in the encryption
-	// Mandatory field for decryption
+	// Mandatory field for decryption - can be loaded via key file
 	PassKey []byte
 }
 
@@ -142,7 +144,7 @@ func GetEncryptionServiceFromFile(filePath string) (*Service, error) {
 		return nil, fmt.Errorf("passkey file does not exist in current directory")
 	}
 
-	bytes, err := os.ReadFile(passKeyFileName)
+	bytes, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failure to read passkey file content with error: %s", err)
 	}
