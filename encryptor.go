@@ -10,6 +10,9 @@ import (
 )
 
 type Encryptor interface {
+	// The setter of passkey - validates input to match expected format for security purposes
+	SetPassKey(key []byte) error
+
 	// Encrypt input bytes using AES-256, returning encrypted bytes or error
 	Encrypt(data []byte) ([]byte, error)
 
@@ -19,25 +22,46 @@ type Encryptor interface {
 	// A helper method for generating a maximum length, randomized passkey
 	GeneratePassKey() error
 
+	// Generate a new Encryption Service from existing passkey file
 	GetEncryptionServiceFromFile(filePath string) (*Service, error)
+
+	// Give the passkey (caution: high security risk - only use when sure of what you are doing)
+	ExportPassKey() []byte
 }
 
 type Service struct {
 	// The passKey key that will be used in the encryption
 	// Mandatory field for decryption - can be loaded via key file
-	PassKey []byte
+	passKey []byte
+
+	// Flag for whether we want to write the passkey to file or keep in memory only
+	// Writing to file allows for ease of use and accessibility at the cost of data leaking,
+	// while keeping in memory means more secure.
+	WriteKeyToFile bool
 }
 
 var passwordByteLength int = 32
 var passKeyFileName string = "passkey.txt"
 
-func (s *Service) Encrypt(data []byte) ([]byte, error) {
-	passKey, err := s.validateInputPassKey()
+func (s *Service) SetPassKey(passKey []byte) error {
+	s.passKey = passKey
+	key, err := s.validateInputPassKey()
 	if err != nil {
-		return nil, fmt.Errorf("failed to validate keypass: %s", err)
+		return fmt.Errorf("failed to validate keypass: %s", err)
+	}
+	s.passKey = key
+	return nil
+}
+
+func (s *Service) Encrypt(data []byte) ([]byte, error) {
+	// Confirm passkey has been set prior to encrypting
+	if len(s.passKey) == 0 {
+		if err := s.GeneratePassKey(); err != nil {
+			return nil, fmt.Errorf("error generating passkey for encryption: %w", err)
+		}
 	}
 
-	aesCipher, err := aes.NewCipher(passKey)
+	aesCipher, err := aes.NewCipher(s.passKey)
 	if err != nil {
 		return nil, fmt.Errorf("failure to create new cipher for encryption: %s", err)
 	}
@@ -56,26 +80,26 @@ func (s *Service) Encrypt(data []byte) ([]byte, error) {
 }
 
 func (s *Service) validateInputPassKey() ([]byte, error) {
-	length := len(s.PassKey)
+	length := len(s.passKey)
 	if length > passwordByteLength {
 		return nil, fmt.Errorf("pass key exceeds maximum length of 32 characters")
 	} else if length == 0 {
 		err := s.GeneratePassKey()
-		return s.PassKey, err
+		return s.passKey, err
 	}
 	return s.padPassword(), nil
 }
 
 func (s *Service) padPassword() []byte {
-	passLength := len(s.PassKey)
+	passLength := len(s.passKey)
 	if passLength == passwordByteLength {
-		return s.PassKey
+		return s.passKey
 	}
 
 	password := make([]byte, passwordByteLength)
 	for i := range passwordByteLength {
 		if i < passLength {
-			password[i] = s.PassKey[i]
+			password[i] = s.passKey[i]
 		} else if i%2 == 0 {
 			password[i] = 'x'
 		} else {
@@ -120,13 +144,14 @@ func (s *Service) GeneratePassKey() error {
 		return fmt.Errorf("only %d characters generated rather than the full length", numBytes)
 	}
 
-	s.PassKey = passKey // set the newly created passkey
+	s.passKey = passKey // set the newly created passkey
 
-	encodedPassKey := make([]byte, hex.EncodedLen(len(passKey)))
-	hex.Encode(encodedPassKey, passKey)
-
-	if err := os.WriteFile(passKeyFileName, encodedPassKey, 0644); err != nil {
-		return fmt.Errorf("error while writing generated passkey to file: %s", err)
+	if s.WriteKeyToFile {
+		encodedPassKey := make([]byte, hex.EncodedLen(len(passKey)))
+		hex.Encode(encodedPassKey, passKey)
+		if err := os.WriteFile(passKeyFileName, encodedPassKey, 0644); err != nil {
+			return fmt.Errorf("error while writing generated passkey to file: %s", err)
+		}
 	}
 
 	return nil
@@ -159,6 +184,10 @@ func GetEncryptionServiceFromFile(filePath string) (*Service, error) {
 	}
 
 	return &Service{
-		PassKey: passKeyBytes,
+		passKey: passKeyBytes,
 	}, nil
+}
+
+func (s *Service) ExportPassKey() []byte {
+	return s.passKey
 }

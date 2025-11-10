@@ -4,13 +4,15 @@ import (
 	"bytes"
 	"encoding/hex"
 	"os"
+	"strings"
 	"testing"
 )
 
 func TestEncryptDecrypt(t *testing.T) {
 	e := Service{
-		PassKey: []byte("test"),
+		WriteKeyToFile: false,
 	}
+	e.SetPassKey([]byte("test"))
 	msg := "super secret message that needs to be encrypted for safe keeping"
 
 	d, err := e.Encrypt([]byte(msg))
@@ -22,21 +24,16 @@ func TestEncryptDecrypt(t *testing.T) {
 	if string(v) != msg {
 		t.Errorf("encryption/decryption incorrectly retrieves original message: %s", err)
 	}
-
-	e.PassKey = []byte("this is a very long password that should be impossible to predict or guesss as it is impossibly long")
-	_, err = e.Encrypt([]byte(msg))
-	lengthError := "failed to validate keypass: pass key exceeds maximum length of 32 characters"
-	if err != nil && err.Error() != lengthError {
-		t.Errorf("unexpected error during encryption of too long key \nError: '%s'\n", err)
-	}
 }
 
 func TestDecrypt(t *testing.T) {
 	e := Service{
-		PassKey: []byte("test"),
+		WriteKeyToFile: false,
 	}
-	encryptedStr := "e2fd61cbe5ddff682e2bc98bf0d92a4c027e38c7b4db10644b65e93823fb56c85d8de0458163b7829fdccc8f8ca5a455758ac4f7fe42f76fc961452b97a49b1eb8b6992ee7d71dbc14e04cf41d951d0127fb1dbd6d2a508fa1f66cf8"
-	data, err := hex.DecodeString(encryptedStr)
+	e.SetPassKey([]byte("test"))
+
+	encryptedHexStr := "e2fd61cbe5ddff682e2bc98bf0d92a4c027e38c7b4db10644b65e93823fb56c85d8de0458163b7829fdccc8f8ca5a455758ac4f7fe42f76fc961452b97a49b1eb8b6992ee7d71dbc14e04cf41d951d0127fb1dbd6d2a508fa1f66cf8"
+	data, err := hex.DecodeString(encryptedHexStr)
 	if err != nil {
 		t.Errorf("failure to decode encrypted string: '%s'", err)
 	}
@@ -59,7 +56,7 @@ func TestGeneratePassKey(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-	if len(e.PassKey) != 32 {
+	if len(e.passKey) != 32 {
 		t.Errorf("invalid passkey length")
 	}
 
@@ -68,32 +65,43 @@ func TestGeneratePassKey(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-	if len(e2.PassKey) != 32 {
+	if len(e2.passKey) != 32 {
 		t.Errorf("invalid passkey length")
 	}
 }
 
 func TestPadPassword(t *testing.T) {
-	e := Service{
-		PassKey: []byte(""),
-	}
-	pass := e.padPassword()
+	e := Service{}
+
+	// Validate empty passkey generation
+	e.SetPassKey([]byte(""))
+	pass := e.passKey
 
 	if len(pass) != 32 {
-		t.Errorf("password is too short - expected: 32 - actual: %d", len(string(pass)))
-	}
-	if string(pass) != "xXxXxXxXxXxXxXxXxXxXxXxXxXxXxXxX" {
-		t.Errorf("invalid password padding - actual: %s", string(pass))
+		t.Errorf("password is too short - expected: 32 - actual: %d", len(pass))
 	}
 
-	e.PassKey = []byte("Test")
-	pass = e.padPassword()
+	// Validate short passkey padding
+	e.SetPassKey([]byte("Test"))
+	pass = e.passKey
 
 	if len(pass) != 32 {
-		t.Errorf("password is too short - expected: 32 - actual: %d", len(string(pass)))
+		t.Errorf("password is too short - expected: 32 - actual: %d", len(pass))
 	}
 	if string(pass) != "TestxXxXxXxXxXxXxXxXxXxXxXxXxXxX" {
 		t.Errorf("invalid password padding - actual: %s", string(pass))
+	}
+}
+
+func TestSetPassKey(t *testing.T) {
+	lengthError := "failed to validate keypass: pass key exceeds maximum length of 32 characters"
+
+	e := Service{}
+	newLongKey := []byte("this is a very long password that should be impossible to predict or guesss as it is impossibly long")
+	err := e.SetPassKey(newLongKey)
+
+	if err != nil && err.Error() != lengthError {
+		t.Errorf("unexpected error during encryption of too long key \nError: '%s'\n", err)
 	}
 }
 
@@ -107,17 +115,23 @@ func TestInputValidator(t *testing.T) {
 		t.Errorf("invalid passkey length in generation")
 	}
 
-	e.PassKey = []byte("12345678901234567890123456789012345678901234567890") // 50 chars
+	e.SetPassKey([]byte(strings.Repeat("1234567890", 5))) // 50 chars
+
 	_, err = e.validateInputPassKey()
 	if err != nil && err.Error() != "pass key exceeds maximum length of 32 characters" {
 		t.Errorf("expecting max length error")
+	}
+	if err == nil {
+		t.Errorf("expecting validation error with key being too long")
 	}
 }
 
 func TestGenerateServiceFromFile(t *testing.T) {
 	secureMsg := "very secure message"
 
-	originalService := Service{}
+	originalService := Service{
+		WriteKeyToFile: true,
+	}
 	dataBytes, err := originalService.Encrypt([]byte(secureMsg))
 	if err != nil {
 		t.Error(err)
@@ -128,7 +142,7 @@ func TestGenerateServiceFromFile(t *testing.T) {
 		t.Error(err)
 	}
 
-	if !bytes.Equal(originalService.PassKey, createdService.PassKey) {
+	if !bytes.Equal(originalService.passKey, createdService.passKey) {
 		t.Errorf("keys do not match")
 	}
 
@@ -145,7 +159,9 @@ func TestGenerateServiceFromFile(t *testing.T) {
 func TestGenerateServiceFromFileDifferentFileName(t *testing.T) {
 	secureMsg := "very secure message"
 
-	service := Service{}
+	service := Service{
+		WriteKeyToFile: true,
+	}
 	encryptedData, err := service.Encrypt([]byte(secureMsg))
 	if err != nil {
 		t.Error(err)
@@ -169,5 +185,10 @@ func TestGenerateServiceFromFileDifferentFileName(t *testing.T) {
 
 	if string(decryptedData) != secureMsg {
 		t.Errorf("failure to decrypt data")
+	}
+
+	// Clean up the passkey file
+	if err = os.Remove(newFileName); err != nil {
+		t.Errorf("problem removing passkey file")
 	}
 }
