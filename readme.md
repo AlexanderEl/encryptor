@@ -14,8 +14,8 @@ A lightweight, secure, and fast encryption service for Go applications using AES
 - 📁 **Secure File Storage** - Keys stored with restrictive permissions (0600)
 - ⚡ **High Performance** - Optimized for speed with minimal overhead
 - 🧵 **Thread-Safe** - Safe for concurrent operations
-- ✅ **Comprehensive Testing** - 95%+ test coverage with benchmarks
-- 📦 **Zero Dependencies** - Uses only Go standard library (+ `golang.org/x/crypto`)
+- ✅ **Comprehensive Testing** - 94%+ test coverage with benchmarks
+- 📦 **Zero Dependencies** - Uses only Go standard library + `golang.org/x/crypto`
 
 ## 📦 Installation
 
