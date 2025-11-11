@@ -25,7 +25,28 @@ go get github.com/AlexanderEl/encryptor
 
 ## 🚀 Quick Start
 
-### Basic Usage
+### Command Line Tool
+
+The easiest way to get started is using the CLI tool for encrypting and decrypting files:
+
+```bash
+# Clone the repository
+git clone https://github.com/AlexanderEl/encryptor.git
+cd encryptor
+
+# Build the CLI tool
+go build -o encryptor cmd/encryptor/main.go
+
+# Encrypt a file (automatically generates passkey.txt)
+./encryptor -op encrypt -file document.txt
+
+# Decrypt the file (uses existing passkey.txt)
+./encryptor -op decrypt -file document.txt.enc
+```
+
+See the [CLI Usage](#-cli-usage) section for complete documentation.
+
+### Library Usage
 
 ```go
 package main
@@ -105,6 +126,216 @@ loadedService, err := encryptor.LoadEncryptionServiceFromFile("my-secret-key.txt
 if err != nil {
     log.Fatal(err)
 }
+```
+
+## 🖥️ CLI Usage
+
+The encryptor comes with a command-line interface for easy file encryption and decryption.
+
+### Building the CLI
+
+```bash
+# Clone the repository
+git clone https://github.com/AlexanderEl/encryptor.git
+cd encryptor
+
+# Build the CLI tool
+go build -o encryptor cmd/encryptor/main.go
+
+# Optionally, install it to your PATH
+go install github.com/AlexanderEl/encryptor/cmd/encryptor@latest
+```
+
+### Command Syntax
+
+```bash
+encryptor -op <operation> -file <path> [options]
+```
+
+### Available Flags
+
+| Flag | Description | Required | Default |
+|------|-------------|----------|---------|
+| `-op` | Operation: `encrypt` or `decrypt` | Yes | - |
+| `-file` | Path to input file | Yes | - |
+| `-out` | Path to output file | No | Auto-generated |
+| `-key` | Path to passkey file | No | `passkey.txt` |
+| `-v` | Verbose output | No | `false` |
+| `-version` | Show version and exit | No | `false` |
+
+### Encryption Examples
+
+```bash
+# Basic encryption (creates passkey.txt automatically)
+./encryptor -op encrypt -file document.txt
+# Output: document.txt.enc
+
+# Encrypt with verbose output
+./encryptor -op encrypt -file confidential.pdf -v
+# Shows detailed progress and warnings
+
+# Encrypt with custom output path
+./encryptor -op encrypt -file data.json -out encrypted_data.bin
+
+# Encrypt using a specific key file
+./encryptor -op encrypt -file report.docx -key my-secret-key.txt
+
+# Encrypt multiple files (bash example)
+for file in *.txt; do
+    ./encryptor -op encrypt -file "$file"
+done
+```
+
+### Decryption Examples
+
+```bash
+# Basic decryption (uses existing passkey.txt)
+./encryptor -op decrypt -file document.txt.enc
+# Output: document.txt
+
+# Decrypt with verbose output
+./encryptor -op decrypt -file confidential.pdf.enc -v
+
+# Decrypt to a specific location
+./encryptor -op decrypt -file encrypted_data.bin -out original_data.json
+
+# Decrypt using a specific key file
+./encryptor -op decrypt -file report.docx.enc -key my-secret-key.txt
+
+# Decrypt multiple files (bash example)
+for file in *.enc; do
+    ./encryptor -op decrypt -file "$file"
+done
+```
+
+### CLI Output Behavior
+
+**Default Output Paths:**
+- **Encryption**: Adds `.enc` extension
+  - `document.txt` → `document.txt.enc`
+- **Decryption**: Removes `.enc` extension or adds `.dec`
+  - `document.txt.enc` → `document.txt`
+  - `document.bin` → `document.bin.dec`
+
+**Normal Mode (default):**
+```bash
+$ ./encryptor -op encrypt -file test.txt
+Encrypted: test.txt → test.txt.enc
+```
+
+**Verbose Mode (`-v` flag):**
+```bash
+$ ./encryptor -op encrypt -file test.txt -v
+
+=========================================================
+                                                         
+    ███████╗███╗   ██╗ ██████╗██████╗ ██╗   ██╗██████╗ ████████╗ ██████╗ ██████╗
+    ██╔════╝████╗  ██║██╔════╝██╔══██╗╚██╗ ██╔╝██╔══██╗╚══██╔══╝██╔═══██╗██╔══██╗
+    █████╗  ██╔██╗ ██║██║     ██████╔╝ ╚████╔╝ ██████╔╝   ██║   ██║   ██║██████╔╝
+    ██╔══╝  ██║╚██╗██║██║     ██╔══██╗  ╚██╔╝  ██╔═══╝    ██║   ██║   ██║██╔══██╗
+    ███████╗██║ ╚████║╚██████╗██║  ██║   ██║   ██║        ██║   ╚██████╔╝██║  ██║
+    ╚══════╝╚═╝  ╚═══╝ ╚═════╝╚═╝  ╚═╝   ╚═╝   ╚═╝        ╚═╝    ╚═════╝ ╚═╝  ╚═╝
+                                                         
+         🔐 Secure File Encryption Tool v1.0.0
+                                                         
+=========================================================
+
+🔒 Encrypting file: test.txt
+   File size: 1234 bytes
+   ✓ New encryption key generated and saved to: passkey.txt
+   ⚠️  Keep this key file secure - you'll need it for decryption!
+   Encrypted size: 1262 bytes
+   ✓ Encrypted file saved to: test.txt.enc
+
+✓ Operation completed successfully!
+```
+
+### CLI Error Messages
+
+The CLI provides clear error messages for common issues:
+
+```bash
+# Missing input file
+$ ./encryptor -op encrypt -file nonexistent.txt
+Error: input file does not exist: nonexistent.txt
+
+# Missing key file for decryption
+$ ./encryptor -op decrypt -file document.txt.enc
+Error: passkey file not found: passkey.txt (needed for decryption)
+
+# Wrong key or corrupted file
+$ ./encryptor -op decrypt -file document.txt.enc
+Error: decryption failed: cipher: message authentication failed (wrong key or corrupted file?)
+
+# Invalid operation
+$ ./encryptor -op invalid -file test.txt
+Error: invalid operation 'invalid'. Use 'encrypt' or 'decrypt'
+```
+
+### CLI Best Practices
+
+1. **Keep Your Key File Safe**
+   ```bash
+   # After encrypting, backup your key file
+   cp passkey.txt ~/secure-backup/passkey-backup.txt
+
+   # Set restrictive permissions
+   chmod 600 passkey.txt
+   ```
+
+2. **Batch Processing**
+   ```bash
+   # Encrypt all text files in a directory
+   find . -name "*.txt" -exec ./encryptor -op encrypt -file {} \;
+
+   # Decrypt all encrypted files
+   find . -name "*.enc" -exec ./encryptor -op decrypt -file {} \;
+   ```
+
+3. **Use Different Keys for Different Projects**
+   ```bash
+   # Project A
+   ./encryptor -op encrypt -file project-a-data.txt -key keys/project-a.txt
+
+   # Project B
+   ./encryptor -op encrypt -file project-b-data.txt -key keys/project-b.txt
+   ```
+
+4. **Verify Encryption Worked**
+   ```bash
+   # Encrypt a file
+   ./encryptor -op encrypt -file important.txt
+
+   # Try to view encrypted file (should be unreadable)
+   cat important.txt.enc
+
+   # Decrypt and verify
+   ./encryptor -op decrypt -file important.txt.enc -out verified.txt
+   diff important.txt verified.txt
+   ```
+
+### Integration with Scripts
+
+```bash
+#!/bin/bash
+# backup-and-encrypt.sh
+
+BACKUP_DIR="/backup"
+KEY_FILE="$HOME/.secrets/backup-key.txt"
+
+# Create backup
+tar -czf backup.tar.gz /important/data
+
+# Encrypt backup
+./encryptor -op encrypt -file backup.tar.gz -key "$KEY_FILE"
+
+# Remove unencrypted backup
+rm backup.tar.gz
+
+# Move to backup location
+mv backup.tar.gz.enc "$BACKUP_DIR/backup-$(date +%Y%m%d).tar.gz.enc"
+
+echo "Backup completed and encrypted successfully!"
 ```
 
 ## 📖 API Documentation
