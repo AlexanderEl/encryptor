@@ -449,14 +449,23 @@ const (
 
 ## ⚡ Performance
 
-Benchmarks on Intel Core i7-9750H @ 2.60GHz:
+Benchmarks on Intel Core i9-14900HX:
 
 ```
-BenchmarkEncrypt-12                    50000    23456 ns/op    2048 B/op    12 allocs/op
-BenchmarkDecrypt-12                    52000    22891 ns/op    1792 B/op    10 allocs/op
-BenchmarkGeneratePassKey-12           500000     2145 ns/op      64 B/op     2 allocs/op
-BenchmarkSetPassKeyFromPassword-12      1000  1234567 ns/op     256 B/op     8 allocs/op
+TEST_NAME                             ITERATIONS  AVG_ITER_DURATION    MEMORY_USED  NUM_MEMORY_ALLOCATIONS
+BenchmarkEncrypt-32                      2874610        420.9 ns/op      1376 B/op       4 allocs/op
+BenchmarkDecrypt-32                      3284224        358.5 ns/op      1328 B/op       3 allocs/op
+BenchmarkGeneratePassKey-32             16353283        69.08 ns/op        32 B/op       1 allocs/op
+BenchmarkSetPassKeyFromPassword-32           100     10304990 ns/op       788 B/op      11 allocs/op
 ```
+
+**Performance Highlights:**
+- ⚡ **Encryption**: ~421 ns/op (~2.4 million ops/sec)
+- ⚡ **Decryption**: ~359 ns/op (~3.3 million ops/sec)
+- ⚡ **Key Generation**: ~69 ns/op (~16.4 million ops/sec)
+- 🔐 **Password Derivation**: ~10.3 ms/op (intentionally slow for security - 100k PBKDF2 iterations)
+
+**Note**: Password-based key derivation is intentionally slow to protect against brute-force attacks. This is a security feature, not a performance issue.
 
 ## 🧪 Testing
 
