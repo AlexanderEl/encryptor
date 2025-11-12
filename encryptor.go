@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	"golang.org/x/crypto/pbkdf2"
 )
@@ -71,22 +72,53 @@ type Encryptor interface {
 
 // Service implements the Encryptor interface
 type Service struct {
+	// mu protects passKey, writeKeyToFile, and keyFilePath
+	mu sync.RWMutex
+
 	// passKey is the encryption key (must be 32 bytes for AES-256)
 	passKey []byte
 
-	// WriteKeyToFile determines whether to persist the key to disk
-	WriteKeyToFile bool
+	// writeKeyToFile determines whether to persist the key to disk
+	writeKeyToFile bool
 
-	// KeyFilePath is the path where the key file will be stored
-	KeyFilePath string
+	// keyFilePath is the path where the key file will be stored
+	keyFilePath string
 }
 
 // NewService creates a new encryption service with default settings
 func NewService() *Service {
 	return &Service{
-		WriteKeyToFile: false,
-		KeyFilePath:    DefaultPassKeyFileName,
+		writeKeyToFile: false,
+		keyFilePath:    DefaultPassKeyFileName,
 	}
+}
+
+// SetWriteKeyToFile sets whether to write the key to file (thread-safe)
+func (s *Service) SetWriteKeyToFile(write bool) {
+	s.mu.Lock()
+	s.writeKeyToFile = write
+	s.mu.Unlock()
+}
+
+// GetWriteKeyToFile returns whether keys are written to file (thread-safe)
+func (s *Service) GetWriteKeyToFile() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.writeKeyToFile
+}
+
+// SetKeyFilePath sets the key file path (thread-safe)
+func (s *Service) SetKeyFilePath(path string) {
+	s.mu.Lock()
+	s.keyFilePath = path
+	s.mu.Unlock()
+}
+
+// GetKeyFilePath returns the key file path (thread-safe)
+func (s *Service) GetKeyFilePath() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.keyFilePath
 }
 
 // SetPassKey sets and validates the encryption passkey
@@ -99,8 +131,13 @@ func (s *Service) SetPassKey(passKey []byte) error {
 		return ErrPassKeyTooLong
 	}
 
-	// Pad the key to required length using PBKDF2 for cryptographic security
-	s.passKey = s.deriveKey(passKey)
+	// Derive key without holding lock (expensive cryptographic operation)
+	derivedKey := s.deriveKey(passKey)
+
+	s.mu.Lock()
+	s.passKey = derivedKey
+	s.mu.Unlock()
+
 	return nil
 }
 
@@ -117,7 +154,13 @@ func (s *Service) SetPassKeyFromPassword(password string, salt []byte) error {
 		}
 	}
 
-	s.passKey = pbkdf2.Key([]byte(password), salt, PBKDF2Iterations, KeyByteLength, sha256.New)
+	// Derive key without holding lock (expensive cryptographic operation)
+	derivedKey := pbkdf2.Key([]byte(password), salt, PBKDF2Iterations, KeyByteLength, sha256.New)
+
+	s.mu.Lock()
+	s.passKey = derivedKey
+	s.mu.Unlock()
+
 	return nil
 }
 
@@ -135,14 +178,22 @@ func (s *Service) Encrypt(data []byte) ([]byte, error) {
 		return nil, ErrEmptyData
 	}
 
-	// Auto-generate passkey if not set
-	if len(s.passKey) == 0 {
+	s.mu.RLock()
+	needsKey := len(s.passKey) == 0
+	s.mu.RUnlock()
+
+	if needsKey {
 		if err := s.GeneratePassKey(); err != nil {
 			return nil, fmt.Errorf("failed to generate passkey: %w", err)
 		}
 	}
 
-	aesCipher, err := aes.NewCipher(s.passKey)
+	s.mu.RLock()
+	keyCopy := make([]byte, len(s.passKey))
+	copy(keyCopy, s.passKey)
+	s.mu.RUnlock()
+
+	aesCipher, err := aes.NewCipher(keyCopy)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create cipher: %w", err)
 	}
@@ -166,11 +217,16 @@ func (s *Service) Decrypt(data []byte) ([]byte, error) {
 		return nil, ErrEmptyData
 	}
 
+	s.mu.RLock()
 	if len(s.passKey) == 0 {
+		s.mu.RUnlock()
 		return nil, ErrPassKeyNotSet
 	}
+	keyCopy := make([]byte, len(s.passKey))
+	copy(keyCopy, s.passKey)
+	s.mu.RUnlock()
 
-	block, err := aes.NewCipher(s.passKey)
+	block, err := aes.NewCipher(keyCopy)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create cipher: %w", err)
 	}
@@ -202,10 +258,26 @@ func (s *Service) GeneratePassKey() error {
 		return fmt.Errorf("failed to generate random passkey: %w", err)
 	}
 
-	s.passKey = passKey
+	// Create a copy for file writing to avoid race with ClearPassKey
+	var passKeyCopy []byte = nil
 
-	if s.WriteKeyToFile {
-		if err := s.writeKeyToFile(); err != nil {
+	s.mu.Lock()
+	s.passKey = passKey
+	writeToFile := s.writeKeyToFile
+	keyFilePath := s.keyFilePath
+	if keyFilePath == "" {
+		keyFilePath = DefaultPassKeyFileName
+	}
+
+	// Only do this if we will be writing to file
+	if writeToFile {
+		passKeyCopy = make([]byte, len(passKey))
+		copy(passKeyCopy, passKey)
+	}
+	s.mu.Unlock()
+
+	if writeToFile {
+		if err := s.writePassKeyToFile(passKeyCopy, keyFilePath); err != nil {
 			return fmt.Errorf("failed to write key to file: %w", err)
 		}
 	}
@@ -213,11 +285,11 @@ func (s *Service) GeneratePassKey() error {
 	return nil
 }
 
-// writeKeyToFile writes the passkey to a file with secure permissions
-func (s *Service) writeKeyToFile() error {
-	encodedKey := hex.EncodeToString(s.passKey)
+// writePassKeyToFile writes the passkey to a file with secure permissions
+func (s *Service) writePassKeyToFile(passKey []byte, filePath string) error {
+	encodedKey := hex.EncodeToString(passKey)
 
-	if err := os.WriteFile(s.KeyFilePath, []byte(encodedKey), FilePermissions); err != nil {
+	if err := os.WriteFile(filePath, []byte(encodedKey), FilePermissions); err != nil {
 		return fmt.Errorf("failed to write passkey file: %w", err)
 	}
 
@@ -226,9 +298,16 @@ func (s *Service) writeKeyToFile() error {
 
 // GetEncryptionServiceFromFile creates a Service from a passkey file
 func (s *Service) GetEncryptionServiceFromFile(filePath string) (*Service, error) {
-	path := s.KeyFilePath
+	s.mu.RLock()
+	path := s.keyFilePath
+	s.mu.RUnlock()
+
 	if filePath != "" {
 		path = filePath
+	}
+
+	if path == "" {
+		path = DefaultPassKeyFileName
 	}
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -251,7 +330,7 @@ func (s *Service) GetEncryptionServiceFromFile(filePath string) (*Service, error
 
 	return &Service{
 		passKey:     passKeyBytes,
-		KeyFilePath: path,
+		keyFilePath: path,
 	}, nil
 }
 
@@ -263,6 +342,9 @@ func LoadEncryptionServiceFromFile(filePath string) (*Service, error) {
 
 // ExportPassKey returns a copy of the passkey (use with extreme caution)
 func (s *Service) ExportPassKey() ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	if len(s.passKey) == 0 {
 		return nil, ErrPassKeyNotSet
 	}
@@ -275,6 +357,9 @@ func (s *Service) ExportPassKey() ([]byte, error) {
 
 // ClearPassKey securely clears the passkey from memory
 func (s *Service) ClearPassKey() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	for i := range s.passKey {
 		s.passKey[i] = 0
 	}

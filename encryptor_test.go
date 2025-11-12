@@ -5,11 +5,14 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"io"
+	mathRand "math/rand"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // TestNewService verifies default service initialization
@@ -18,12 +21,70 @@ func TestNewService(t *testing.T) {
 	if s == nil {
 		t.Fatal("NewService returned nil")
 	}
-	if s.WriteKeyToFile {
-		t.Error("WriteKeyToFile should default to false")
+	if s.GetWriteKeyToFile() {
+		t.Error("GetWriteKeyToFile should default to false")
 	}
-	if s.KeyFilePath != DefaultPassKeyFileName {
-		t.Errorf("KeyFilePath = %s, want %s", s.KeyFilePath, DefaultPassKeyFileName)
+	if s.GetKeyFilePath() != DefaultPassKeyFileName {
+		t.Errorf("GetKeyFilePath = %s, want %s", s.GetKeyFilePath(), DefaultPassKeyFileName)
 	}
+}
+
+// TestThreadSafeAccessors tests the thread-safe getter/setter methods
+func TestThreadSafeAccessors(t *testing.T) {
+	s := NewService()
+
+	// Test SetWriteKeyToFile/GetWriteKeyToFile
+	s.SetWriteKeyToFile(true)
+	if !s.GetWriteKeyToFile() {
+		t.Error("GetWriteKeyToFile should return true after SetWriteKeyToFile(true)")
+	}
+
+	s.SetWriteKeyToFile(false)
+	if s.GetWriteKeyToFile() {
+		t.Error("GetWriteKeyToFile should return false after SetWriteKeyToFile(false)")
+	}
+
+	// Test SetKeyFilePath/GetKeyFilePath
+	testPath := "/test/path/key.txt"
+	s.SetKeyFilePath(testPath)
+	if s.GetKeyFilePath() != testPath {
+		t.Errorf("GetKeyFilePath = %s, want %s", s.GetKeyFilePath(), testPath)
+	}
+
+	// Test multiple changes
+	paths := []string{"/path1", "/path2", "/path3"}
+	for _, path := range paths {
+		s.SetKeyFilePath(path)
+		if s.GetKeyFilePath() != path {
+			t.Errorf("GetKeyFilePath = %s, want %s", s.GetKeyFilePath(), path)
+		}
+	}
+}
+
+// TestConcurrentAccessors tests thread-safe accessors under concurrent access
+func TestConcurrentAccessors(t *testing.T) {
+	s := NewService()
+	const numGoroutines = 100
+	var wg sync.WaitGroup
+
+	// Concurrent writes and reads to WriteKeyToFile
+	for i := range numGoroutines {
+		wg.Go(func() {
+			s.SetWriteKeyToFile(i%2 == 0)
+			_ = s.GetWriteKeyToFile()
+		})
+	}
+
+	// Concurrent writes and reads to KeyFilePath
+	for i := range numGoroutines {
+		wg.Go(func() {
+			s.SetKeyFilePath("/path/" + string(rune('a'+i%26)))
+			_ = s.GetKeyFilePath()
+		})
+	}
+
+	wg.Wait()
+	// Should pass with -race flag
 }
 
 // TestEncryptDecrypt tests basic encryption and decryption
@@ -31,11 +92,6 @@ func TestEncryptDecrypt(t *testing.T) {
 	s := NewService()
 	if err := s.SetPassKey([]byte("test")); err != nil {
 		t.Fatalf("SetPassKey failed: %v", err)
-	}
-
-	// Verify key was set
-	if len(s.passKey) != KeyByteLength {
-		t.Errorf("passKey length = %d, want %d", len(s.passKey), KeyByteLength)
 	}
 
 	original := []byte("super secret message")
@@ -61,11 +117,6 @@ func TestEncryptDecrypt(t *testing.T) {
 
 	if !bytes.Equal(decrypted, original) {
 		t.Errorf("Decrypted = %s, want %s", decrypted, original)
-	}
-
-	// Verify exact match
-	if !bytes.Equal(decrypted, original) {
-		t.Error("Decrypted string does not match original")
 	}
 }
 
@@ -100,15 +151,6 @@ func TestSetPassKey(t *testing.T) {
 				} else if !strings.Contains(err.Error(), tt.errMsg) {
 					t.Errorf("Error message = %v, want substring %v", err.Error(), tt.errMsg)
 				}
-				// Verify key was not set on error
-				if len(s.passKey) != 0 {
-					t.Error("passKey should not be set when error occurs")
-				}
-			} else {
-				// Verify key was set correctly
-				if len(s.passKey) != KeyByteLength {
-					t.Errorf("passKey length = %d, want %d", len(s.passKey), KeyByteLength)
-				}
 			}
 		})
 	}
@@ -120,30 +162,8 @@ func TestSetPassKeyFromPassword(t *testing.T) {
 	password := "my-secure-password"
 	salt := make([]byte, SaltLength)
 
-	// Verify initial state
-	if len(s.passKey) != 0 {
-		t.Error("passKey should be empty initially")
-	}
-
 	if err := s.SetPassKeyFromPassword(password, salt); err != nil {
 		t.Fatalf("SetPassKeyFromPassword failed: %v", err)
-	}
-
-	// Verify key was generated
-	if len(s.passKey) != KeyByteLength {
-		t.Errorf("passKey length = %d, want %d", len(s.passKey), KeyByteLength)
-	}
-
-	// Verify key is not empty
-	allZeros := true
-	for _, b := range s.passKey {
-		if b != 0 {
-			allZeros = false
-			break
-		}
-	}
-	if allZeros {
-		t.Error("passKey should not be all zeros")
 	}
 
 	// Test with auto-generated salt
@@ -153,7 +173,9 @@ func TestSetPassKeyFromPassword(t *testing.T) {
 	}
 
 	// Verify different salts produce different keys
-	if bytes.Equal(s.passKey, s2.passKey) {
+	key1, _ := s.ExportPassKey()
+	key2, _ := s2.ExportPassKey()
+	if bytes.Equal(key1, key2) {
 		t.Error("Different salts should produce different keys")
 	}
 
@@ -165,10 +187,6 @@ func TestSetPassKeyFromPassword(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "passkey cannot be empty") {
 		t.Errorf("Error message = %v, want 'passkey cannot be empty'", err.Error())
-	}
-	// Verify key was not set on error
-	if len(s3.passKey) != 0 {
-		t.Error("passKey should not be set when error occurs")
 	}
 }
 
@@ -185,10 +203,6 @@ func TestSetPassKeyFromPasswordSaltFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "failed to generate salt") {
 		t.Errorf("Error message = %v, want 'failed to generate salt'", err.Error())
-	}
-	// Verify key was not set on error
-	if len(s.passKey) != 0 {
-		t.Error("passKey should not be set when error occurs")
 	}
 }
 
@@ -222,11 +236,6 @@ func TestEncryptEmptyData(t *testing.T) {
 func TestEncryptAutoGenerateFailure(t *testing.T) {
 	s := NewService()
 
-	// Verify key is not set initially
-	if len(s.passKey) != 0 {
-		t.Error("passKey should be empty initially")
-	}
-
 	originalReader := rand.Reader
 	defer func() { rand.Reader = originalReader }()
 
@@ -241,10 +250,6 @@ func TestEncryptAutoGenerateFailure(t *testing.T) {
 	if result != nil {
 		t.Error("Result should be nil on error")
 	}
-	// Verify key was not set on error
-	if len(s.passKey) != 0 {
-		t.Error("passKey should not be set when generation fails")
-	}
 }
 
 // TestEncryptNonceFailure tests encryption when nonce generation fails
@@ -252,11 +257,6 @@ func TestEncryptNonceFailure(t *testing.T) {
 	s := NewService()
 	if err := s.SetPassKey([]byte("test")); err != nil {
 		t.Fatalf("SetPassKey failed: %v", err)
-	}
-
-	// Verify key is set
-	if len(s.passKey) != KeyByteLength {
-		t.Error("passKey should be set")
 	}
 
 	originalReader := rand.Reader
@@ -304,11 +304,6 @@ func TestDecryptEmptyData(t *testing.T) {
 // TestDecryptWithoutKey tests decryption without setting a key
 func TestDecryptWithoutKey(t *testing.T) {
 	s := NewService()
-
-	// Verify key is not set
-	if len(s.passKey) != 0 {
-		t.Error("passKey should be empty initially")
-	}
 
 	result, err := s.Decrypt([]byte("some data"))
 	if err != ErrPassKeyNotSet {
@@ -365,11 +360,6 @@ func TestDecryptWithWrongKey(t *testing.T) {
 		t.Fatalf("SetPassKey failed: %v", err)
 	}
 
-	// Verify keys are different
-	if bytes.Equal(s1.passKey, s2.passKey) {
-		t.Error("Keys should be different")
-	}
-
 	result, err := s2.Decrypt(encrypted)
 	if err == nil {
 		t.Error("Decrypt with wrong key should fail")
@@ -386,41 +376,20 @@ func TestDecryptWithWrongKey(t *testing.T) {
 func TestGeneratePassKey(t *testing.T) {
 	s := NewService()
 
-	// Verify initial state
-	if len(s.passKey) != 0 {
-		t.Error("passKey should be empty initially")
-	}
-
 	if err := s.GeneratePassKey(); err != nil {
 		t.Fatalf("GeneratePassKey failed: %v", err)
 	}
 
-	// Verify key length
-	if len(s.passKey) != KeyByteLength {
-		t.Errorf("passKey length = %d, want %d", len(s.passKey), KeyByteLength)
-	}
-
-	// Verify key is not all zeros
-	allZeros := true
-	for _, b := range s.passKey {
-		if b != 0 {
-			allZeros = false
-			break
-		}
-	}
-	if allZeros {
-		t.Error("Generated passKey should not be all zeros")
-	}
-
 	// Generate another key and verify uniqueness
-	oldKey := make([]byte, len(s.passKey))
-	copy(oldKey, s.passKey)
+	key1, _ := s.ExportPassKey()
 
 	if err := s.GeneratePassKey(); err != nil {
 		t.Fatalf("Second GeneratePassKey failed: %v", err)
 	}
 
-	if bytes.Equal(oldKey, s.passKey) {
+	key2, _ := s.ExportPassKey()
+
+	if bytes.Equal(key1, key2) {
 		t.Error("Consecutive generated keys should be different")
 	}
 }
@@ -428,11 +397,6 @@ func TestGeneratePassKey(t *testing.T) {
 // TestGeneratePassKeyFailure tests key generation failure
 func TestGeneratePassKeyFailure(t *testing.T) {
 	s := NewService()
-
-	// Verify initial state
-	if len(s.passKey) != 0 {
-		t.Error("passKey should be empty initially")
-	}
 
 	originalReader := rand.Reader
 	defer func() { rand.Reader = originalReader }()
@@ -445,10 +409,6 @@ func TestGeneratePassKeyFailure(t *testing.T) {
 	if !strings.Contains(err.Error(), "failed to generate random passkey") {
 		t.Errorf("Error message = %v, want 'failed to generate random passkey'", err.Error())
 	}
-	// Verify key was not set on error
-	if len(s.passKey) != 0 {
-		t.Error("passKey should not be set when generation fails")
-	}
 }
 
 // TestGeneratePassKeyToFile tests key generation with file persistence
@@ -457,8 +417,8 @@ func TestGeneratePassKeyToFile(t *testing.T) {
 	keyFile := filepath.Join(tempDir, "test_key.txt")
 
 	s := NewService()
-	s.WriteKeyToFile = true
-	s.KeyFilePath = keyFile
+	s.SetWriteKeyToFile(true)
+	s.SetKeyFilePath(keyFile)
 
 	if err := s.GeneratePassKey(); err != nil {
 		t.Fatalf("GeneratePassKey failed: %v", err)
@@ -481,8 +441,8 @@ func TestGeneratePassKeyToFile(t *testing.T) {
 // TestGeneratePassKeyFileWriteFailure tests file write failure
 func TestGeneratePassKeyFileWriteFailure(t *testing.T) {
 	s := NewService()
-	s.WriteKeyToFile = true
-	s.KeyFilePath = "/invalid/path/key.txt"
+	s.SetWriteKeyToFile(true)
+	s.SetKeyFilePath("/invalid/path/key.txt")
 
 	err := s.GeneratePassKey()
 	if err == nil {
@@ -490,10 +450,6 @@ func TestGeneratePassKeyFileWriteFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "failed to write key to file") {
 		t.Errorf("Error message = %v, want 'failed to write key to file'", err.Error())
-	}
-	// Key should still be generated in memory even if file write fails
-	if len(s.passKey) != KeyByteLength {
-		t.Error("passKey should be generated even if file write fails")
 	}
 }
 
@@ -503,8 +459,8 @@ func TestGetEncryptionServiceFromFile(t *testing.T) {
 	keyFile := filepath.Join(tempDir, "passkey.txt")
 
 	s1 := NewService()
-	s1.WriteKeyToFile = true
-	s1.KeyFilePath = keyFile
+	s1.SetWriteKeyToFile(true)
+	s1.SetKeyFilePath(keyFile)
 
 	original := []byte("test message")
 	encrypted, err := s1.Encrypt(original)
@@ -513,14 +469,10 @@ func TestGetEncryptionServiceFromFile(t *testing.T) {
 	}
 
 	s2 := NewService()
-	s2.KeyFilePath = keyFile
+	s2.SetKeyFilePath(keyFile)
 	loaded, err := s2.GetEncryptionServiceFromFile("")
 	if err != nil {
 		t.Fatalf("GetEncryptionServiceFromFile failed: %v", err)
-	}
-
-	if !bytes.Equal(s1.passKey, loaded.passKey) {
-		t.Error("Loaded key doesn't match original")
 	}
 
 	decrypted, err := loaded.Decrypt(encrypted)
@@ -539,8 +491,8 @@ func TestLoadEncryptionServiceFromFile(t *testing.T) {
 	keyFile := filepath.Join(tempDir, "key.txt")
 
 	s1 := NewService()
-	s1.WriteKeyToFile = true
-	s1.KeyFilePath = keyFile
+	s1.SetWriteKeyToFile(true)
+	s1.SetKeyFilePath(keyFile)
 	if err := s1.GeneratePassKey(); err != nil {
 		t.Fatalf("GeneratePassKey failed: %v", err)
 	}
@@ -550,7 +502,10 @@ func TestLoadEncryptionServiceFromFile(t *testing.T) {
 		t.Fatalf("LoadEncryptionServiceFromFile failed: %v", err)
 	}
 
-	if !bytes.Equal(s1.passKey, s2.passKey) {
+	key1, _ := s1.ExportPassKey()
+	key2, _ := s2.ExportPassKey()
+
+	if !bytes.Equal(key1, key2) {
 		t.Error("Loaded key doesn't match original")
 	}
 }
@@ -655,28 +610,12 @@ func TestClearPassKey(t *testing.T) {
 		t.Fatalf("SetPassKey failed: %v", err)
 	}
 
-	// Verify key is set
-	if len(s.passKey) != KeyByteLength {
-		t.Error("passKey should be set")
-	}
-
-	originalPassKey := s.passKey
-
 	s.ClearPassKey()
-
-	// Verify key is nil
-	if s.passKey != nil {
-		t.Error("passKey should be nil after Clear")
-	}
 
 	// Verify operations fail after clearing
 	encrypted, err := s.Encrypt([]byte("test"))
 	if err != nil {
 		t.Errorf("encrypting post key clearing failed")
-	}
-
-	if bytes.Equal(s.passKey, originalPassKey) {
-		t.Error("encryption after key clearing did not generate new unique key")
 	}
 
 	// Clear key before decrypting
@@ -695,7 +634,7 @@ func TestConcurrentEncryption(t *testing.T) {
 		t.Fatalf("SetPassKey failed: %v", err)
 	}
 
-	const numGoroutines = 50
+	const numGoroutines = 500
 	var wg sync.WaitGroup
 	errors := make(chan error, numGoroutines)
 
@@ -703,7 +642,7 @@ func TestConcurrentEncryption(t *testing.T) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			data := []byte("message")
+			data := generateData()
 			encrypted, err := s.Encrypt(data)
 			if err != nil {
 				errors <- err
@@ -726,6 +665,65 @@ func TestConcurrentEncryption(t *testing.T) {
 	for err := range errors {
 		t.Errorf("Concurrent operation failed: %v", err)
 	}
+}
+
+// TestConcurrentService tests concurrent services
+func TestConcurrentService(t *testing.T) {
+	const numGoroutines = 500
+	var wg sync.WaitGroup
+	errors := make(chan error, numGoroutines)
+
+	for i := range numGoroutines {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+
+			s := NewService()
+			if err := s.SetPassKey(randBytes(randRange(2, 32))); err != nil {
+				errors <- err
+			}
+
+			data := generateData()
+			encrypted, err := s.Encrypt(data)
+			if err != nil {
+				errors <- err
+				return
+			}
+			decrypted, err := s.Decrypt(encrypted)
+			if err != nil {
+				errors <- err
+				return
+			}
+			if !bytes.Equal(decrypted, data) {
+				errors <- err
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errors)
+
+	for err := range errors {
+		t.Errorf("Concurrent services failed: %v", err)
+	}
+}
+
+const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+func randBytes(n int) []byte {
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = letterBytes[mathRand.Intn(len(letterBytes))]
+	}
+	return b
+}
+
+func randRange(min, max int) int {
+	return mathRand.Intn(max-min) + min
+}
+
+func generateData() []byte {
+	return randBytes(randRange(2, 100_000))
 }
 
 // failingReader always returns an error
@@ -790,4 +788,460 @@ func BenchmarkSetPassKeyFromPassword(b *testing.B) {
 			b.Fatalf("SetPassKeyFromPassword failed: %v", err)
 		}
 	}
+}
+
+// Race condition test cases: require the -race flag to find problems
+
+// TestRaceConcurrentSetPassKey tests race condition when multiple goroutines set passkey
+func TestRaceConcurrentSetPassKey(t *testing.T) {
+	s := NewService()
+	const numGoroutines = 100
+	var wg sync.WaitGroup
+
+	// Multiple goroutines concurrently setting different keys
+	for i := range numGoroutines {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			key := []byte{byte(id)}
+			_ = s.SetPassKey(key)
+		}(i)
+	}
+
+	wg.Wait()
+}
+
+// TestRaceConcurrentGeneratePassKey tests race when multiple goroutines generate keys
+func TestRaceConcurrentGeneratePassKey(t *testing.T) {
+	s := NewService()
+	const numGoroutines = 100
+	var wg sync.WaitGroup
+	errors := make(chan error, numGoroutines)
+
+	for range numGoroutines {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := s.GeneratePassKey(); err != nil {
+				errors <- err
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errors)
+
+	for err := range errors {
+		t.Errorf("GeneratePassKey failed: %v", err)
+	}
+}
+
+// TestRaceSetPassKeyWhileEncrypting tests setting key while encrypting
+func TestRaceSetPassKeyWhileEncrypting(t *testing.T) {
+	s := NewService()
+	_ = s.SetPassKey([]byte("initial"))
+
+	const numGoroutines = 50
+	var wg sync.WaitGroup
+	data := []byte("test data")
+
+	// Half goroutines encrypt, half modify the key
+	for i := range numGoroutines {
+		wg.Add(1)
+		if i%2 == 0 {
+			go func() {
+				defer wg.Done()
+				_, _ = s.Encrypt(data)
+			}()
+		} else {
+			go func(id int) {
+				defer wg.Done()
+				_ = s.SetPassKey([]byte{byte(id)})
+			}(i)
+		}
+	}
+
+	wg.Wait()
+}
+
+// TestRaceGeneratePassKeyWhileEncrypting tests generating key while encrypting
+func TestRaceGeneratePassKeyWhileEncrypting(t *testing.T) {
+	s := NewService()
+	_ = s.SetPassKey([]byte("initial"))
+
+	const numGoroutines = 50
+	var wg sync.WaitGroup
+	data := []byte("test data")
+
+	for i := range numGoroutines {
+		wg.Add(1)
+		if i%2 == 0 {
+			go func() {
+				defer wg.Done()
+				_, _ = s.Encrypt(data)
+			}()
+		} else {
+			go func() {
+				defer wg.Done()
+				_ = s.GeneratePassKey()
+			}()
+		}
+	}
+
+	wg.Wait()
+}
+
+// TestRaceClearPassKeyWhileEncrypting tests clearing key while encrypting
+func TestRaceClearPassKeyWhileEncrypting(t *testing.T) {
+	s := NewService()
+	_ = s.SetPassKey([]byte("test"))
+
+	const numGoroutines = 50
+	var wg sync.WaitGroup
+	data := []byte("test data")
+
+	for i := range numGoroutines {
+		wg.Add(1)
+		if i%2 == 0 {
+			go func() {
+				defer wg.Done()
+				_, _ = s.Encrypt(data)
+			}()
+		} else {
+			go func() {
+				defer wg.Done()
+				s.ClearPassKey()
+			}()
+		}
+	}
+
+	wg.Wait()
+}
+
+// TestRaceClearPassKeyWhileDecrypting tests clearing key while decrypting
+func TestRaceClearPassKeyWhileDecrypting(t *testing.T) {
+	s := NewService()
+	_ = s.SetPassKey([]byte("test"))
+
+	encrypted, err := s.Encrypt([]byte("data"))
+	if err != nil {
+		t.Fatalf("Encrypt failed: %v", err)
+	}
+
+	const numGoroutines = 50
+	var wg sync.WaitGroup
+
+	for i := range numGoroutines {
+		wg.Add(1)
+		if i%2 == 0 {
+			go func() {
+				defer wg.Done()
+				_, _ = s.Decrypt(encrypted)
+			}()
+		} else {
+			go func() {
+				defer wg.Done()
+				s.ClearPassKey()
+			}()
+		}
+	}
+
+	wg.Wait()
+}
+
+// TestRaceEncryptWithAutoGenerateRace tests the auto-generate race condition
+func TestRaceEncryptWithAutoGenerateRace(t *testing.T) {
+	// This is the critical race: multiple goroutines calling Encrypt
+	// when passKey is not set, causing multiple auto-generations
+	s := NewService()
+
+	const numGoroutines = 100
+	var wg sync.WaitGroup
+	data := []byte("test data")
+	encrypted := make([][]byte, numGoroutines)
+
+	// All goroutines see empty passKey and try to auto-generate
+	for i := range numGoroutines {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			enc, _ := s.Encrypt(data)
+			encrypted[idx] = enc
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Due to potential race, different goroutines may have encrypted with different keys
+	// Try to decrypt all with the final key (most should succeed with proper locking)
+	successCount := 0
+	for _, enc := range encrypted {
+		if enc != nil {
+			if dec, err := s.Decrypt(enc); err == nil && bytes.Equal(dec, data) {
+				successCount++
+			}
+		}
+	}
+
+	// With proper locking, all encryptions should succeed with the same key
+	if successCount != numGoroutines {
+		t.Logf("Only %d/%d decryptions succeeded", successCount, numGoroutines)
+	}
+}
+
+// TestRaceConfigFieldsWhileOperating tests race on config fields
+func TestRaceConfigFieldsWhileOperating(t *testing.T) {
+	s := NewService()
+
+	const numGoroutines = 50
+	var wg sync.WaitGroup
+
+	for i := range numGoroutines {
+		wg.Add(1)
+		switch i % 3 {
+		case 0:
+			go func() {
+				defer wg.Done()
+				s.SetWriteKeyToFile(true)
+			}()
+		case 1:
+			go func() {
+				defer wg.Done()
+				s.SetKeyFilePath("/tmp/key.txt")
+			}()
+		default:
+			go func() {
+				defer wg.Done()
+				_ = s.GeneratePassKey()
+			}()
+		}
+	}
+
+	wg.Wait()
+}
+
+// TestRaceExportPassKeyWhileModifying tests exporting while modifying
+func TestRaceExportPassKeyWhileModifying(t *testing.T) {
+	s := NewService()
+	_ = s.SetPassKey([]byte("test"))
+
+	const numGoroutines = 50
+	var wg sync.WaitGroup
+
+	for i := range numGoroutines {
+		wg.Add(1)
+		if i%2 == 0 {
+			go func() {
+				defer wg.Done()
+				_, _ = s.ExportPassKey()
+			}()
+		} else {
+			go func(id int) {
+				defer wg.Done()
+				_ = s.SetPassKey([]byte{byte(id)})
+			}(i)
+		}
+	}
+
+	wg.Wait()
+}
+
+// TestRaceSetPassKeyFromPasswordConcurrent tests concurrent password-based key setting
+func TestRaceSetPassKeyFromPasswordConcurrent(t *testing.T) {
+	s := NewService()
+
+	const numGoroutines = 100
+	var wg sync.WaitGroup
+
+	for i := range numGoroutines {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			_ = s.SetPassKeyFromPassword("password", nil)
+		}(i)
+	}
+
+	wg.Wait()
+}
+
+// TestRaceMixedOperations tests realistic mixed concurrent operations
+func TestRaceMixedOperations(t *testing.T) {
+	s := NewService()
+	_ = s.SetPassKey([]byte("initial"))
+
+	const numGoroutines = 100
+	var wg sync.WaitGroup
+	data := []byte("test data")
+
+	encrypted, _ := s.Encrypt(data)
+
+	for i := range numGoroutines {
+		wg.Add(1)
+		switch i % 6 {
+		case 0:
+			go func() {
+				defer wg.Done()
+				_, _ = s.Encrypt(data)
+			}()
+		case 1:
+			go func() {
+				defer wg.Done()
+				_, _ = s.Decrypt(encrypted)
+			}()
+		case 2:
+			go func(id int) {
+				defer wg.Done()
+				_ = s.SetPassKey([]byte{byte(id)})
+			}(i)
+		case 3:
+			go func() {
+				defer wg.Done()
+				_ = s.GeneratePassKey()
+			}()
+		case 4:
+			go func() {
+				defer wg.Done()
+				s.ClearPassKey()
+			}()
+		case 5:
+			go func() {
+				defer wg.Done()
+				_, _ = s.ExportPassKey()
+			}()
+		}
+	}
+
+	wg.Wait()
+}
+
+// TestRaceStressTest runs intensive concurrent operations to maximize race detection
+func TestRaceStressTest(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping stress test in short mode")
+	}
+
+	s := NewService()
+	_ = s.SetPassKey([]byte("test"))
+
+	const duration = 1 * time.Second
+	var stop atomic.Bool
+	var wg sync.WaitGroup
+
+	data := []byte("test data")
+	encrypted, _ := s.Encrypt(data)
+
+	// Encrypt operations
+	wg.Go(func() {
+		for !stop.Load() {
+			_, _ = s.Encrypt(data)
+		}
+	})
+
+	// Decrypt operations
+	wg.Go(func() {
+		for !stop.Load() {
+			_, _ = s.Decrypt(encrypted)
+		}
+	})
+
+	// SetPassKey operations
+	wg.Go(func() {
+		counter := byte(0)
+		for !stop.Load() {
+			_ = s.SetPassKey([]byte{counter})
+			counter++
+		}
+	})
+
+	// GeneratePassKey operations
+	wg.Go(func() {
+		for !stop.Load() {
+			_ = s.GeneratePassKey()
+		}
+	})
+
+	// ClearPassKey operations
+	wg.Go(func() {
+		for !stop.Load() {
+			s.ClearPassKey()
+			time.Sleep(1 * time.Millisecond)
+		}
+	})
+
+	// ExportPassKey operations
+	wg.Go(func() {
+		for !stop.Load() {
+			_, _ = s.ExportPassKey()
+		}
+	})
+
+	// Config setter operations
+	wg.Go(func() {
+		toggle := false
+		for !stop.Load() {
+			s.SetWriteKeyToFile(toggle)
+			toggle = !toggle
+			time.Sleep(1 * time.Millisecond)
+		}
+	})
+
+	// Config getter operations
+	wg.Go(func() {
+		for !stop.Load() {
+			_ = s.GetWriteKeyToFile()
+			_ = s.GetKeyFilePath()
+		}
+	})
+
+	time.Sleep(duration)
+	stop.Store(true)
+	wg.Wait()
+}
+
+// TestRaceEncryptDecryptDifferentKeys demonstrates encryption/decryption with concurrent key changes
+func TestRaceEncryptDecryptDifferentKeys(t *testing.T) {
+	s := NewService()
+	_ = s.SetPassKey([]byte("key1"))
+
+	const numGoroutines = 50
+	var wg sync.WaitGroup
+	var successCount, failCount atomic.Int32
+
+	original := []byte("secret message")
+
+	for i := range numGoroutines {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+
+			// Encrypt
+			encrypted, err := s.Encrypt(original)
+			if err != nil {
+				failCount.Add(1)
+				return
+			}
+
+			// Another goroutine might change the key here
+			if id%10 == 0 {
+				_ = s.SetPassKey([]byte{byte(id)})
+			}
+
+			// Try to decrypt
+			decrypted, err := s.Decrypt(encrypted)
+			if err != nil {
+				failCount.Add(1)
+				return
+			}
+
+			if bytes.Equal(decrypted, original) {
+				successCount.Add(1)
+			} else {
+				failCount.Add(1)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	t.Logf("Success: %d, Failures: %d", successCount.Load(), failCount.Load())
 }

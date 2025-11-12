@@ -276,8 +276,8 @@ func getOrCreateService(keyFilePath string) (*encryptor.Service, bool, error) {
 
 	// Create new service with key generation
 	service := encryptor.NewService()
-	service.WriteKeyToFile = true
-	service.KeyFilePath = keyFilePath
+	service.SetWriteKeyToFile(true)
+	service.SetKeyFilePath(keyFilePath)
 
 	if err := service.GeneratePassKey(); err != nil {
 		return nil, false, err
