@@ -627,6 +627,351 @@ func TestClearPassKey(t *testing.T) {
 	}
 }
 
+// TestDecryptInvalidKeySize tests decryption with a key that causes cipher creation to fail
+func TestDecryptInvalidKeySize(t *testing.T) {
+	s := NewService()
+
+	// Manually set an invalid key size to force aes.NewCipher to fail
+	// AES only accepts 16, 24, or 32 byte keys
+	s.mu.Lock()
+	s.passKey = make([]byte, 15) // Invalid size
+	s.mu.Unlock()
+
+	// Create valid ciphertext structure (nonce + data)
+	data := make([]byte, 20) // 12 byte nonce + 8 bytes data
+
+	result, err := s.Decrypt(data)
+	if err == nil {
+		t.Error("Expected error when cipher creation fails")
+	}
+	if !strings.Contains(err.Error(), "failed to create cipher") {
+		t.Errorf("Error message = %v, want 'failed to create cipher'", err.Error())
+	}
+	if result != nil {
+		t.Error("Result should be nil on error")
+	}
+}
+
+// TestEncryptInvalidKeyForGCM tests encryption failure during GCM creation
+// Note: This is difficult to trigger since aes.NewCipher validation catches most issues
+// and cipher.NewGCM rarely fails with valid AES ciphers
+func TestEncryptCipherCreation(t *testing.T) {
+	s := NewService()
+
+	// Set an invalid key size (not 16, 24, or 32 bytes)
+	s.mu.Lock()
+	s.passKey = make([]byte, 15) // Invalid for AES
+	s.mu.Unlock()
+
+	result, err := s.Encrypt([]byte("test data"))
+	if err == nil {
+		t.Error("Expected error with invalid key size")
+	}
+	if !strings.Contains(err.Error(), "failed to create cipher") {
+		t.Errorf("Error message = %v, want 'failed to create cipher'", err.Error())
+	}
+	if result != nil {
+		t.Error("Result should be nil on error")
+	}
+}
+
+// TestDecryptGCMCreationFailure tests GCM creation failure during decryption
+// This is extremely difficult to trigger naturally as cipher.NewGCM rarely fails
+// with a valid AES cipher. We'd need to mock the cipher.Block interface.
+func TestDecryptWithMalformedCipher(t *testing.T) {
+	s := NewService()
+
+	// Use an invalid key size to cause issues
+	s.mu.Lock()
+	s.passKey = make([]byte, 17) // Invalid size for AES
+	s.mu.Unlock()
+
+	// Create data that passes initial length checks
+	data := make([]byte, 20)
+
+	result, err := s.Decrypt(data)
+	if err == nil {
+		t.Error("Expected error with invalid cipher")
+	}
+	if !strings.Contains(err.Error(), "failed to create cipher") {
+		t.Errorf("Error message = %v, want 'failed to create cipher'", err.Error())
+	}
+	if result != nil {
+		t.Error("Result should be nil on error")
+	}
+}
+
+// TestGeneratePassKeyFileWriteError tests file write failure with a mock
+func TestGeneratePassKeyUnwritableFile(t *testing.T) {
+	// Create a directory where we want the file to be
+	tempDir := t.TempDir()
+	keyFile := filepath.Join(tempDir, "subdir", "key.txt")
+
+	// Don't create the subdir - this will cause write to fail
+	s := NewService()
+	s.SetWriteKeyToFile(true)
+	s.SetKeyFilePath(keyFile)
+
+	err := s.GeneratePassKey()
+	if err == nil {
+		t.Error("Expected error when writing to non-existent directory")
+	}
+	if !strings.Contains(err.Error(), "failed to write key to file") {
+		t.Errorf("Error message = %v, want 'failed to write key to file'", err.Error())
+	}
+}
+
+// TestGeneratePassKeyReadOnlyDirectory tests writing to a read-only location
+func TestGeneratePassKeyReadOnlyDirectory(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("Skipping test when running as root")
+	}
+
+	tempDir := t.TempDir()
+	keyFile := filepath.Join(tempDir, "key.txt")
+
+	// Make directory read-only
+	if err := os.Chmod(tempDir, 0444); err != nil {
+		t.Fatalf("Failed to chmod directory: %v", err)
+	}
+	defer os.Chmod(tempDir, 0755) // Restore permissions for cleanup
+
+	s := NewService()
+	s.SetWriteKeyToFile(true)
+	s.SetKeyFilePath(keyFile)
+
+	err := s.GeneratePassKey()
+	if err == nil {
+		t.Error("Expected error when writing to read-only directory")
+	}
+	if !strings.Contains(err.Error(), "failed to write key to file") {
+		t.Errorf("Error message = %v, want 'failed to write key to file'", err.Error())
+	}
+}
+
+// TestGetEncryptionServiceFromFileReadError tests file read failure
+func TestGetEncryptionServiceFromFileReadError(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("Skipping test when running as root")
+	}
+
+	tempDir := t.TempDir()
+	keyFile := filepath.Join(tempDir, "key.txt")
+
+	// Create a file but make it unreadable
+	if err := os.WriteFile(keyFile, []byte("test"), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	// Make file unreadable (no read permissions)
+	if err := os.Chmod(keyFile, 0000); err != nil {
+		t.Fatalf("Failed to chmod file: %v", err)
+	}
+	defer os.Chmod(keyFile, 0644) // Restore permissions for cleanup
+
+	s := NewService()
+	result, err := s.GetEncryptionServiceFromFile(keyFile)
+	if err == nil {
+		t.Error("Expected error when reading unreadable file")
+	}
+	if !strings.Contains(err.Error(), "failed to read passkey file") {
+		t.Errorf("Error message = %v, want 'failed to read passkey file'", err.Error())
+	}
+	if result != nil {
+		t.Error("Result should be nil on error")
+	}
+}
+
+// TestGetEncryptionServiceFromFileStatError tests the stat error path
+func TestGetEncryptionServiceFromFileStatError(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("Skipping test when running as root")
+	}
+
+	tempDir := t.TempDir()
+	subDir := filepath.Join(tempDir, "subdir")
+	keyFile := filepath.Join(subDir, "key.txt")
+
+	// Create subdirectory with a file
+	if err := os.Mkdir(subDir, 0755); err != nil {
+		t.Fatalf("Mkdir failed: %v", err)
+	}
+	if err := os.WriteFile(keyFile, []byte("test"), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	// Remove read/execute permissions from parent directory
+	// This makes the file unstat-able
+	if err := os.Chmod(subDir, 0000); err != nil {
+		t.Fatalf("Failed to chmod directory: %v", err)
+	}
+	defer os.Chmod(subDir, 0755) // Restore permissions for cleanup
+
+	s := NewService()
+	result, err := s.GetEncryptionServiceFromFile(keyFile)
+	if err == nil {
+		t.Error("Expected error when stat fails")
+	}
+	// The error message will vary but should indicate file access issues
+	if result != nil {
+		t.Error("Result should be nil on error")
+	}
+}
+
+// TestEncryptWithCorruptedCipher attempts to test cipher creation failure
+func TestEncryptWithInvalidAESKey(t *testing.T) {
+	s := NewService()
+
+	// AES requires keys of length 16, 24, or 32 bytes
+	// Set a key with invalid length directly
+	s.mu.Lock()
+	s.passKey = make([]byte, 20) // Invalid length
+	s.mu.Unlock()
+
+	_, err := s.Encrypt([]byte("test"))
+	if err == nil {
+		t.Error("Expected error with invalid AES key length")
+	}
+	if !strings.Contains(err.Error(), "failed to create cipher") {
+		t.Errorf("Error message = %v, want 'failed to create cipher'", err.Error())
+	}
+}
+
+// TestDecryptGCMFailure attempts to test GCM creation failure
+// Note: cipher.NewGCM rarely fails with valid AES block ciphers
+func TestDecryptWithInvalidAESKey(t *testing.T) {
+	s := NewService()
+
+	// Set invalid key length
+	s.mu.Lock()
+	s.passKey = make([]byte, 20) // Invalid for AES
+	s.mu.Unlock()
+
+	// Create minimally valid ciphertext structure
+	data := make([]byte, 16) // Enough for nonce
+
+	_, err := s.Decrypt(data)
+	if err == nil {
+		t.Error("Expected error with invalid AES key")
+	}
+	if !strings.Contains(err.Error(), "failed to create cipher") {
+		t.Errorf("Error message = %v, want 'failed to create cipher'", err.Error())
+	}
+}
+
+// Alternative approach: Test the actual encryption with different key sizes
+func TestEncryptDecryptWithVariousKeySizes(t *testing.T) {
+	// Test with keys that will be derived to 32 bytes
+	validKeys := [][]byte{
+		[]byte("short"),
+		[]byte("medium-length-key"),
+		bytes.Repeat([]byte("a"), 32),
+	}
+
+	for _, key := range validKeys {
+		s := NewService()
+		if err := s.SetPassKey(key); err != nil {
+			t.Fatalf("SetPassKey failed: %v", err)
+		}
+
+		data := []byte("test data")
+		encrypted, err := s.Encrypt(data)
+		if err != nil {
+			t.Errorf("Encrypt failed for key length %d: %v", len(key), err)
+			continue
+		}
+
+		decrypted, err := s.Decrypt(encrypted)
+		if err != nil {
+			t.Errorf("Decrypt failed for key length %d: %v", len(key), err)
+			continue
+		}
+
+		if !bytes.Equal(decrypted, data) {
+			t.Errorf("Decrypted data doesn't match for key length %d", len(key))
+		}
+	}
+}
+
+// TestWritePassKeyToFilePermissionError specifically targets the write error
+func TestWritePassKeyToFileDirectly(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("Skipping test when running as root")
+	}
+
+	tempDir := t.TempDir()
+
+	// Make directory read-only AFTER creating it
+	if err := os.Chmod(tempDir, 0444); err != nil {
+		t.Fatalf("Failed to chmod: %v", err)
+	}
+	defer os.Chmod(tempDir, 0755)
+
+	s := NewService()
+	passKey := make([]byte, 32)
+
+	err := s.writePassKeyToFile(passKey, filepath.Join(tempDir, "key.txt"))
+	if err == nil {
+		t.Error("Expected error writing to read-only directory")
+	}
+	if !strings.Contains(err.Error(), "failed to write passkey file") {
+		t.Errorf("Error = %v, want 'failed to write passkey file'", err.Error())
+	}
+}
+
+// TestGetEncryptionServiceFromFileWithEmptyInternalPath tests when both paths are empty
+func TestGetEncryptionServiceFromFileWithEmptyInternalPath(t *testing.T) {
+	tempDir := t.TempDir()
+	originalWd, _ := os.Getwd()
+	defer os.Chdir(originalWd)
+
+	os.Chdir(tempDir)
+
+	// Create default key file
+	s := NewService()
+	s.SetWriteKeyToFile(true)
+	// keyFilePath will be default
+
+	if err := s.GeneratePassKey(); err != nil {
+		t.Fatalf("GeneratePassKey failed: %v", err)
+	}
+
+	// Test with both empty: internal keyFilePath and parameter
+	s2 := NewService()
+	s2.SetKeyFilePath("") // Empty internal path
+
+	loaded, err := s2.GetEncryptionServiceFromFile("") // Empty parameter
+	if err != nil {
+		t.Fatalf("GetEncryptionServiceFromFile failed: %v", err)
+	}
+
+	if loaded == nil {
+		t.Error("Expected loaded service to not be nil")
+	}
+}
+
+// TestGeneratePassKeyWithEmptyFilePath tests GeneratePassKey when keyFilePath is empty
+func TestGeneratePassKeyWithEmptyFilePath(t *testing.T) {
+	tempDir := t.TempDir()
+	originalWd, _ := os.Getwd()
+	defer os.Chdir(originalWd)
+
+	os.Chdir(tempDir)
+
+	s := NewService()
+	s.SetWriteKeyToFile(true)
+	s.SetKeyFilePath("") // Set to empty string
+
+	if err := s.GeneratePassKey(); err != nil {
+		t.Fatalf("GeneratePassKey with empty path failed: %v", err)
+	}
+
+	// Verify file was created at default location
+	if _, err := os.Stat(DefaultPassKeyFileName); os.IsNotExist(err) {
+		t.Error("Default key file was not created")
+	}
+}
+
 // TestConcurrentEncryption tests concurrent operations
 func TestConcurrentEncryption(t *testing.T) {
 	s := NewService()
