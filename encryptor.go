@@ -19,6 +19,9 @@ const (
 	// KeyByteLength is the required length for AES-256 encryption keys
 	KeyByteLength = 32
 
+	// MinKeyByteLength is the minimum acceptable key length (AES-128)
+	MinKeyByteLength = 16
+
 	// DefaultPassKeyFileName is the default filename for storing encryption keys
 	DefaultPassKeyFileName = "passkey.txt"
 
@@ -39,6 +42,9 @@ var (
 	// ErrPassKeyTooLong is returned when passkey exceeds maximum length
 	ErrPassKeyTooLong = errors.New("passkey exceeds maximum length of 32 bytes")
 
+	// ErrKeyTooShort is returned when key is shorter than minimum length
+	ErrKeyTooShort = errors.New("key must be at least 16 bytes for AES-128")
+
 	// ErrEmptyData is returned when trying to encrypt/decrypt empty data
 	ErrEmptyData = errors.New("data cannot be empty")
 
@@ -51,11 +57,16 @@ var (
 
 // Encryptor defines the interface for encryption operations
 type Encryptor interface {
-	// SetPassKey sets the passkey and validates it
-	SetPassKey(key []byte) error
+	// SetExportedKey sets an existing key (caution dangerous)
+	// This will override the existing key with incoming passKey - no key modification
+	// Primary use case: decrypt data with exported key
+	SetExportedKey(key []byte) error
 
-	// SetPassKeyFromPassword derives a secure key from a password
-	SetPassKeyFromPassword(password string, salt []byte) error
+	// SetNewPassKey sets the passkey and validates it
+	SetNewPassKey(key []byte) error
+
+	// SetNewPassKeyFromPassword derives a secure key from a password
+	SetNewPassKeyFromPassword(password string, salt []byte) error
 
 	// Encrypt encrypts data using AES-256-GCM
 	Encrypt(data []byte) ([]byte, error)
@@ -121,8 +132,34 @@ func (s *Service) GetKeyFilePath() string {
 	return s.keyFilePath
 }
 
-// SetPassKey sets and validates the encryption passkey
-func (s *Service) SetPassKey(passKey []byte) error {
+// SetExportedKey sets an existing key (caution dangerous)
+// This will override the existing key with incoming passKey - no key modification
+// Primary use case: decrypt data with exported key
+func (s *Service) SetExportedKey(passKey []byte) error {
+	if len(passKey) == 0 {
+		return ErrEmptyPassKey
+	}
+
+	if len(passKey) < MinKeyByteLength {
+		return ErrKeyTooShort
+	}
+
+	if len(passKey) > KeyByteLength {
+		return ErrPassKeyTooLong
+	}
+
+	keyToStore := make([]byte, len(passKey))
+	copy(keyToStore, passKey)
+
+	s.mu.Lock()
+	s.passKey = keyToStore
+	s.mu.Unlock()
+
+	return nil
+}
+
+// SetNewPassKey sets and validates the encryption passkey
+func (s *Service) SetNewPassKey(passKey []byte) error {
 	if len(passKey) == 0 {
 		return ErrEmptyPassKey
 	}
@@ -141,8 +178,8 @@ func (s *Service) SetPassKey(passKey []byte) error {
 	return nil
 }
 
-// SetPassKeyFromPassword derives a secure key from a user password using PBKDF2
-func (s *Service) SetPassKeyFromPassword(password string, salt []byte) error {
+// SetNewPassKeyFromPassword derives a secure key from a user password using PBKDF2
+func (s *Service) SetNewPassKeyFromPassword(password string, salt []byte) error {
 	if password == "" {
 		return ErrEmptyPassKey
 	}

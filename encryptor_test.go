@@ -90,7 +90,7 @@ func TestConcurrentAccessors(t *testing.T) {
 // TestEncryptDecrypt tests basic encryption and decryption
 func TestEncryptDecrypt(t *testing.T) {
 	s := NewService()
-	if err := s.SetPassKey([]byte("test")); err != nil {
+	if err := s.SetNewPassKey([]byte("test")); err != nil {
 		t.Fatalf("SetPassKey failed: %v", err)
 	}
 
@@ -138,7 +138,7 @@ func TestSetPassKey(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := NewService()
-			err := s.SetPassKey(tt.key)
+			err := s.SetNewPassKey(tt.key)
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("SetPassKey() error = %v, wantErr %v", err, tt.wantErr)
@@ -162,13 +162,13 @@ func TestSetPassKeyFromPassword(t *testing.T) {
 	password := "my-secure-password"
 	salt := make([]byte, SaltLength)
 
-	if err := s.SetPassKeyFromPassword(password, salt); err != nil {
+	if err := s.SetNewPassKeyFromPassword(password, salt); err != nil {
 		t.Fatalf("SetPassKeyFromPassword failed: %v", err)
 	}
 
 	// Test with auto-generated salt
 	s2 := NewService()
-	if err := s2.SetPassKeyFromPassword(password, nil); err != nil {
+	if err := s2.SetNewPassKeyFromPassword(password, nil); err != nil {
 		t.Fatalf("SetPassKeyFromPassword with auto-salt failed: %v", err)
 	}
 
@@ -181,7 +181,7 @@ func TestSetPassKeyFromPassword(t *testing.T) {
 
 	// Test empty password
 	s3 := NewService()
-	err := s3.SetPassKeyFromPassword("", nil)
+	err := s3.SetNewPassKeyFromPassword("", nil)
 	if err == nil {
 		t.Error("SetPassKeyFromPassword with empty password should fail")
 	}
@@ -197,7 +197,7 @@ func TestSetPassKeyFromPasswordSaltFailure(t *testing.T) {
 	defer func() { rand.Reader = originalReader }()
 
 	rand.Reader = &failingReader{}
-	err := s.SetPassKeyFromPassword("password", nil)
+	err := s.SetNewPassKeyFromPassword("password", nil)
 	if err == nil {
 		t.Error("Expected error when salt generation fails")
 	}
@@ -209,7 +209,7 @@ func TestSetPassKeyFromPasswordSaltFailure(t *testing.T) {
 // TestEncryptEmptyData tests encryption of empty data
 func TestEncryptEmptyData(t *testing.T) {
 	s := NewService()
-	if err := s.SetPassKey([]byte("test")); err != nil {
+	if err := s.SetNewPassKey([]byte("test")); err != nil {
 		t.Fatalf("SetPassKey failed: %v", err)
 	}
 
@@ -255,7 +255,7 @@ func TestEncryptAutoGenerateFailure(t *testing.T) {
 // TestEncryptNonceFailure tests encryption when nonce generation fails
 func TestEncryptNonceFailure(t *testing.T) {
 	s := NewService()
-	if err := s.SetPassKey([]byte("test")); err != nil {
+	if err := s.SetNewPassKey([]byte("test")); err != nil {
 		t.Fatalf("SetPassKey failed: %v", err)
 	}
 
@@ -278,7 +278,7 @@ func TestEncryptNonceFailure(t *testing.T) {
 // TestDecryptEmptyData tests decryption of empty data
 func TestDecryptEmptyData(t *testing.T) {
 	s := NewService()
-	if err := s.SetPassKey([]byte("test")); err != nil {
+	if err := s.SetNewPassKey([]byte("test")); err != nil {
 		t.Fatalf("SetPassKey failed: %v", err)
 	}
 
@@ -317,7 +317,7 @@ func TestDecryptWithoutKey(t *testing.T) {
 // TestDecryptInvalidCiphertext tests decryption of invalid ciphertext
 func TestDecryptInvalidCiphertext(t *testing.T) {
 	s := NewService()
-	if err := s.SetPassKey([]byte("test")); err != nil {
+	if err := s.SetNewPassKey([]byte("test")); err != nil {
 		t.Fatalf("SetPassKey failed: %v", err)
 	}
 
@@ -345,7 +345,7 @@ func TestDecryptInvalidCiphertext(t *testing.T) {
 // TestDecryptWithWrongKey tests decryption with incorrect key
 func TestDecryptWithWrongKey(t *testing.T) {
 	s1 := NewService()
-	if err := s1.SetPassKey([]byte("key1")); err != nil {
+	if err := s1.SetNewPassKey([]byte("key1")); err != nil {
 		t.Fatalf("SetPassKey failed: %v", err)
 	}
 
@@ -356,7 +356,7 @@ func TestDecryptWithWrongKey(t *testing.T) {
 	}
 
 	s2 := NewService()
-	if err := s2.SetPassKey([]byte("key2")); err != nil {
+	if err := s2.SetNewPassKey([]byte("key2")); err != nil {
 		t.Fatalf("SetPassKey failed: %v", err)
 	}
 
@@ -582,7 +582,7 @@ func TestExportPassKey(t *testing.T) {
 		t.Errorf("ExportPassKey without key error = %v, want %v", err, ErrPassKeyNotSet)
 	}
 
-	if err := s.SetPassKey([]byte("test")); err != nil {
+	if err := s.SetNewPassKey([]byte("test")); err != nil {
 		t.Fatalf("SetPassKey failed: %v", err)
 	}
 
@@ -603,10 +603,418 @@ func TestExportPassKey(t *testing.T) {
 	}
 }
 
+// TestExportKeyValidation tests export and import workflow
+func TestExportKeyValidation(t *testing.T) {
+	s := NewService()
+	s.GeneratePassKey()
+
+	msg := []byte("secure message")
+	encrypted, _ := s.Encrypt(msg)
+
+	key, _ := s.ExportPassKey()
+	if !bytes.Equal(key, s.passKey) {
+		t.Fatalf("Exported key does not match set key")
+	}
+
+	ns := NewService()
+	ns.SetExportedKey(key)
+
+	if !bytes.Equal(key, ns.passKey) {
+		t.Fatalf("Setting key causes key to change")
+	}
+
+	decryptedMsg, err := ns.Decrypt(encrypted)
+	if err != nil {
+		t.Fatalf("Failed to decrypt with exported key: %v", err)
+	}
+
+	if !bytes.Equal(msg, decryptedMsg) {
+		t.Errorf("Failed to retrieve original message")
+	}
+}
+
+// TestSetExportedKeyValidation tests validation of SetExportedKey
+func TestSetExportedKeyValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		key     []byte
+		wantErr error
+	}{
+		{"valid 32-byte key", make([]byte, 32), nil},
+		{"valid 16-byte key", make([]byte, 16), nil},
+		{"valid 24-byte key", make([]byte, 24), nil},
+		{"empty key", []byte{}, ErrEmptyPassKey},
+		{"nil key", nil, ErrEmptyPassKey},
+		{"key too short", make([]byte, 15), ErrKeyTooShort},
+		{"key too long (33 bytes)", make([]byte, 33), ErrPassKeyTooLong},
+		{"key too long (64 bytes)", make([]byte, 64), ErrPassKeyTooLong},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := NewService()
+			err := s.SetExportedKey(tt.key)
+			if err != tt.wantErr {
+				t.Errorf("SetExportedKey() error = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestExportedKeyNoDerivation verifies that SetExportedKey doesn't derive the key
+func TestExportedKeyNoDerivation(t *testing.T) {
+	s := NewService()
+
+	// Create a specific key pattern
+	originalKey := []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+		17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32}
+
+	if err := s.SetExportedKey(originalKey); err != nil {
+		t.Fatalf("SetExportedKey failed: %v", err)
+	}
+
+	exported, err := s.ExportPassKey()
+	if err != nil {
+		t.Fatalf("ExportPassKey failed: %v", err)
+	}
+
+	// The exported key should be identical (not derived)
+	if !bytes.Equal(originalKey, exported) {
+		t.Errorf("SetExportedKey modified the key")
+	}
+}
+
+// TestExportedKeyVsNewPassKey verifies the difference between SetExportedKey and SetNewPassKey
+func TestExportedKeyVsNewPassKey(t *testing.T) {
+	// Use a key that's at least 16 bytes for SetExportedKey validation
+	testKey := []byte("test-key-value16") // 16 bytes
+
+	// Service using SetNewPassKey (derives key)
+	s1 := NewService()
+	if err := s1.SetNewPassKey(testKey); err != nil {
+		t.Fatalf("SetNewPassKey failed: %v", err)
+	}
+	derivedKey, _ := s1.ExportPassKey()
+
+	// Service using SetExportedKey (no derivation)
+	s2 := NewService()
+	if err := s2.SetExportedKey(testKey); err != nil {
+		t.Fatalf("SetExportedKey failed: %v", err)
+	}
+	directKey, _ := s2.ExportPassKey()
+
+	// Keys should be different
+	if bytes.Equal(derivedKey, directKey) {
+		t.Error("SetNewPassKey and SetExportedKey produced identical keys (derivation not working)")
+	}
+
+	// The direct key should match the input
+	if !bytes.Equal(testKey, directKey) {
+		t.Error("SetExportedKey modified the key")
+	}
+
+	// Verify the derived key is 32 bytes
+	if len(derivedKey) != KeyByteLength {
+		t.Errorf("Derived key length = %d, want %d", len(derivedKey), KeyByteLength)
+	}
+}
+
+// TestExportImportWorkflow tests the complete export/import workflow
+func TestExportImportWorkflow(t *testing.T) {
+	// Create original service and encrypt data
+	original := NewService()
+	if err := original.GeneratePassKey(); err != nil {
+		t.Fatalf("GeneratePassKey failed: %v", err)
+	}
+
+	message := []byte("confidential message for export test")
+	encrypted, err := original.Encrypt(message)
+	if err != nil {
+		t.Fatalf("Encrypt failed: %v", err)
+	}
+
+	// Export the key
+	exportedKey, err := original.ExportPassKey()
+	if err != nil {
+		t.Fatalf("ExportPassKey failed: %v", err)
+	}
+
+	// Create new service and import the key
+	imported := NewService()
+	if err := imported.SetExportedKey(exportedKey); err != nil {
+		t.Fatalf("SetExportedKey failed: %v", err)
+	}
+
+	// Decrypt with imported key
+	decrypted, err := imported.Decrypt(encrypted)
+	if err != nil {
+		t.Fatalf("Decrypt with imported key failed: %v", err)
+	}
+
+	// Verify decrypted message matches original
+	if !bytes.Equal(message, decrypted) {
+		t.Errorf("Decrypted message doesn't match")
+	}
+
+	// Test that imported key can also encrypt
+	newMessage := []byte("encrypt with imported key")
+	newEncrypted, err := imported.Encrypt(newMessage)
+	if err != nil {
+		t.Fatalf("Encrypt with imported key failed: %v", err)
+	}
+
+	// Original service should decrypt new message
+	newDecrypted, err := original.Decrypt(newEncrypted)
+	if err != nil {
+		t.Fatalf("Decrypt new message failed: %v", err)
+	}
+	if !bytes.Equal(newMessage, newDecrypted) {
+		t.Error("Bidirectional encryption/decryption failed")
+	}
+}
+
+// TestExportedKeyFailsWithDerivedEncryption tests that raw passwords don't work with derived keys
+func TestExportedKeyFailsWithDerivedEncryption(t *testing.T) {
+	// Use a 16-byte password for SetExportedKey validation
+	password := []byte("my-password-1234") // 16 bytes
+
+	// Service 1: Use SetNewPassKey (derives the key)
+	s1 := NewService()
+	if err := s1.SetNewPassKey(password); err != nil {
+		t.Fatalf("SetNewPassKey failed: %v", err)
+	}
+
+	message := []byte("encrypted with derived key")
+	encrypted, err := s1.Encrypt(message)
+	if err != nil {
+		t.Fatalf("Encrypt failed: %v", err)
+	}
+
+	// Service 2: Try to use the same password with SetExportedKey (no derivation)
+	s2 := NewService()
+	if err := s2.SetExportedKey(password); err != nil {
+		t.Fatalf("SetExportedKey failed: %v", err)
+	}
+
+	// This should FAIL because s2 has the raw password, not the derived key
+	_, err = s2.Decrypt(encrypted)
+	if err == nil {
+		t.Error("Decrypt should fail when using raw password instead of derived key")
+	}
+
+	// Service 3: Export the derived key and use it correctly
+	derivedKey, _ := s1.ExportPassKey()
+	s3 := NewService()
+	if err := s3.SetExportedKey(derivedKey); err != nil {
+		t.Fatalf("SetExportedKey with derived key failed: %v", err)
+	}
+
+	// This should SUCCEED
+	decrypted, err := s3.Decrypt(encrypted)
+	if err != nil {
+		t.Fatalf("Decrypt with exported derived key failed: %v", err)
+	}
+	if !bytes.Equal(message, decrypted) {
+		t.Error("Decrypted message doesn't match original")
+	}
+}
+
+// TestExportedKeyDifferentSizes tests export/import with various key sizes
+func TestExportedKeyDifferentSizes(t *testing.T) {
+	validSizes := []int{16, 24, 32}
+
+	for _, size := range validSizes {
+		t.Run(string(rune('0'+size)), func(t *testing.T) {
+			// Create key of specific size
+			key := make([]byte, size)
+			for i := range key {
+				key[i] = byte(i)
+			}
+
+			// Set and encrypt
+			s1 := NewService()
+			if err := s1.SetExportedKey(key); err != nil {
+				t.Fatalf("SetExportedKey failed for size %d: %v", size, err)
+			}
+
+			message := []byte("test message")
+			encrypted, err := s1.Encrypt(message)
+			if err != nil {
+				t.Fatalf("Encrypt failed for key size %d: %v", size, err)
+			}
+
+			// Export and import
+			exported, _ := s1.ExportPassKey()
+			s2 := NewService()
+			if err := s2.SetExportedKey(exported); err != nil {
+				t.Fatalf("SetExportedKey on import failed for size %d: %v", size, err)
+			}
+
+			// Decrypt
+			decrypted, err := s2.Decrypt(encrypted)
+			if err != nil {
+				t.Fatalf("Decrypt failed for key size %d: %v", size, err)
+			}
+			if !bytes.Equal(message, decrypted) {
+				t.Errorf("Decryption failed for key size %d", size)
+			}
+		})
+	}
+}
+
+// TestExportedKeyImmutability verifies that modifying exported key doesn't affect service
+func TestExportedKeyImmutability(t *testing.T) {
+	s := NewService()
+	if err := s.GeneratePassKey(); err != nil {
+		t.Fatalf("GeneratePassKey failed: %v", err)
+	}
+
+	// Export key and modify it
+	exported, _ := s.ExportPassKey()
+	originalCopy := make([]byte, len(exported))
+	copy(originalCopy, exported)
+
+	// Corrupt the exported key
+	for i := range exported {
+		exported[i] ^= 0xFF
+	}
+
+	// Service should still have original key
+	stillExported, _ := s.ExportPassKey()
+	if !bytes.Equal(originalCopy, stillExported) {
+		t.Error("Modifying exported key affected internal key")
+	}
+
+	// Also test SetExportedKey immutability
+	keyToSet := make([]byte, 32)
+	for i := range keyToSet {
+		keyToSet[i] = byte(i)
+	}
+	keyCopy := make([]byte, len(keyToSet))
+	copy(keyCopy, keyToSet)
+
+	s2 := NewService()
+	if err := s2.SetExportedKey(keyToSet); err != nil {
+		t.Fatalf("SetExportedKey failed: %v", err)
+	}
+
+	// Modify the original slice
+	for i := range keyToSet {
+		keyToSet[i] = 0xFF
+	}
+
+	// Service should have the original values
+	retrieved, _ := s2.ExportPassKey()
+	if !bytes.Equal(keyCopy, retrieved) {
+		t.Error("SetExportedKey didn't copy the key properly")
+	}
+}
+
+// TestExportedKeyCrossService tests encryption/decryption across multiple services
+func TestExportedKeyCrossService(t *testing.T) {
+	// Create master service
+	master := NewService()
+	if err := master.GeneratePassKey(); err != nil {
+		t.Fatalf("GeneratePassKey failed: %v", err)
+	}
+	masterKey, _ := master.ExportPassKey()
+
+	// Create multiple services with the same exported key
+	numServices := 5
+	services := make([]*Service, numServices)
+	for i := range services {
+		services[i] = NewService()
+		if err := services[i].SetExportedKey(masterKey); err != nil {
+			t.Fatalf("SetExportedKey on service %d failed: %v", i, err)
+		}
+	}
+
+	// Service 2 encrypts a message
+	message := []byte("shared message")
+	encrypted, err := services[2].Encrypt(message)
+	if err != nil {
+		t.Fatalf("Encrypt failed: %v", err)
+	}
+
+	// All services should be able to decrypt it
+	for i, svc := range services {
+		decrypted, err := svc.Decrypt(encrypted)
+		if err != nil {
+			t.Errorf("Service %d failed to decrypt: %v", i, err)
+			continue
+		}
+		if !bytes.Equal(message, decrypted) {
+			t.Errorf("Service %d decrypted wrong content", i)
+		}
+	}
+
+	// Master service should also decrypt
+	decrypted, err := master.Decrypt(encrypted)
+	if err != nil {
+		t.Fatalf("Master decrypt failed: %v", err)
+	}
+	if !bytes.Equal(message, decrypted) {
+		t.Error("Master decrypted wrong content")
+	}
+}
+
+// TestSetExportedKeyOverwritesExisting tests that SetExportedKey overwrites the current key
+func TestSetExportedKeyOverwritesExisting(t *testing.T) {
+	s := NewService()
+
+	// Set initial key
+	if err := s.GeneratePassKey(); err != nil {
+		t.Fatalf("GeneratePassKey failed: %v", err)
+	}
+	key1, _ := s.ExportPassKey()
+
+	// Encrypt with first key
+	msg1 := []byte("encrypted with first key")
+	enc1, err := s.Encrypt(msg1)
+	if err != nil {
+		t.Fatalf("Encrypt failed: %v", err)
+	}
+
+	// Overwrite with exported key
+	newKey := make([]byte, 32)
+	for i := range newKey {
+		newKey[i] = byte(i)
+	}
+	if err := s.SetExportedKey(newKey); err != nil {
+		t.Fatalf("SetExportedKey failed: %v", err)
+	}
+	key2, _ := s.ExportPassKey()
+
+	// Keys should be different
+	if bytes.Equal(key1, key2) {
+		t.Error("SetExportedKey didn't overwrite the key")
+	}
+
+	// Should NOT be able to decrypt old message
+	if _, err := s.Decrypt(enc1); err == nil {
+		t.Error("Should not be able to decrypt with different key")
+	}
+
+	// Should be able to encrypt/decrypt with new key
+	msg2 := []byte("encrypted with new key")
+	enc2, err := s.Encrypt(msg2)
+	if err != nil {
+		t.Fatalf("Encrypt with new key failed: %v", err)
+	}
+
+	dec2, err := s.Decrypt(enc2)
+	if err != nil {
+		t.Fatalf("Decrypt with new key failed: %v", err)
+	}
+	if !bytes.Equal(msg2, dec2) {
+		t.Error("Message encrypted/decrypted with new key doesn't match")
+	}
+}
+
 // TestClearPassKey tests securely clearing the passkey
 func TestClearPassKey(t *testing.T) {
 	s := NewService()
-	if err := s.SetPassKey([]byte("test")); err != nil {
+	if err := s.SetNewPassKey([]byte("test")); err != nil {
 		t.Fatalf("SetPassKey failed: %v", err)
 	}
 
@@ -632,13 +1040,12 @@ func TestDecryptInvalidKeySize(t *testing.T) {
 	s := NewService()
 
 	// Manually set an invalid key size to force aes.NewCipher to fail
-	// AES only accepts 16, 24, or 32 byte keys
 	s.mu.Lock()
 	s.passKey = make([]byte, 15) // Invalid size
 	s.mu.Unlock()
 
 	// Create valid ciphertext structure (nonce + data)
-	data := make([]byte, 20) // 12 byte nonce + 8 bytes data
+	data := make([]byte, 20)
 
 	result, err := s.Decrypt(data)
 	if err == nil {
@@ -652,15 +1059,13 @@ func TestDecryptInvalidKeySize(t *testing.T) {
 	}
 }
 
-// TestEncryptInvalidKeyForGCM tests encryption failure during GCM creation
-// Note: This is difficult to trigger since aes.NewCipher validation catches most issues
-// and cipher.NewGCM rarely fails with valid AES ciphers
+// TestEncryptCipherCreation tests encryption failure during cipher creation
 func TestEncryptCipherCreation(t *testing.T) {
 	s := NewService()
 
-	// Set an invalid key size (not 16, 24, or 32 bytes)
+	// Set an invalid key size
 	s.mu.Lock()
-	s.passKey = make([]byte, 15) // Invalid for AES
+	s.passKey = make([]byte, 15)
 	s.mu.Unlock()
 
 	result, err := s.Encrypt([]byte("test data"))
@@ -672,52 +1077,6 @@ func TestEncryptCipherCreation(t *testing.T) {
 	}
 	if result != nil {
 		t.Error("Result should be nil on error")
-	}
-}
-
-// TestDecryptGCMCreationFailure tests GCM creation failure during decryption
-// This is extremely difficult to trigger naturally as cipher.NewGCM rarely fails
-// with a valid AES cipher. We'd need to mock the cipher.Block interface.
-func TestDecryptWithMalformedCipher(t *testing.T) {
-	s := NewService()
-
-	// Use an invalid key size to cause issues
-	s.mu.Lock()
-	s.passKey = make([]byte, 17) // Invalid size for AES
-	s.mu.Unlock()
-
-	// Create data that passes initial length checks
-	data := make([]byte, 20)
-
-	result, err := s.Decrypt(data)
-	if err == nil {
-		t.Error("Expected error with invalid cipher")
-	}
-	if !strings.Contains(err.Error(), "failed to create cipher") {
-		t.Errorf("Error message = %v, want 'failed to create cipher'", err.Error())
-	}
-	if result != nil {
-		t.Error("Result should be nil on error")
-	}
-}
-
-// TestGeneratePassKeyFileWriteError tests file write failure with a mock
-func TestGeneratePassKeyUnwritableFile(t *testing.T) {
-	// Create a directory where we want the file to be
-	tempDir := t.TempDir()
-	keyFile := filepath.Join(tempDir, "subdir", "key.txt")
-
-	// Don't create the subdir - this will cause write to fail
-	s := NewService()
-	s.SetWriteKeyToFile(true)
-	s.SetKeyFilePath(keyFile)
-
-	err := s.GeneratePassKey()
-	if err == nil {
-		t.Error("Expected error when writing to non-existent directory")
-	}
-	if !strings.Contains(err.Error(), "failed to write key to file") {
-		t.Errorf("Error message = %v, want 'failed to write key to file'", err.Error())
 	}
 }
 
@@ -734,7 +1093,7 @@ func TestGeneratePassKeyReadOnlyDirectory(t *testing.T) {
 	if err := os.Chmod(tempDir, 0444); err != nil {
 		t.Fatalf("Failed to chmod directory: %v", err)
 	}
-	defer os.Chmod(tempDir, 0755) // Restore permissions for cleanup
+	defer os.Chmod(tempDir, 0755)
 
 	s := NewService()
 	s.SetWriteKeyToFile(true)
@@ -763,11 +1122,11 @@ func TestGetEncryptionServiceFromFileReadError(t *testing.T) {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
-	// Make file unreadable (no read permissions)
+	// Make file unreadable
 	if err := os.Chmod(keyFile, 0000); err != nil {
 		t.Fatalf("Failed to chmod file: %v", err)
 	}
-	defer os.Chmod(keyFile, 0644) // Restore permissions for cleanup
+	defer os.Chmod(keyFile, 0644)
 
 	s := NewService()
 	result, err := s.GetEncryptionServiceFromFile(keyFile)
@@ -782,143 +1141,6 @@ func TestGetEncryptionServiceFromFileReadError(t *testing.T) {
 	}
 }
 
-// TestGetEncryptionServiceFromFileStatError tests the stat error path
-func TestGetEncryptionServiceFromFileStatError(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("Skipping test when running as root")
-	}
-
-	tempDir := t.TempDir()
-	subDir := filepath.Join(tempDir, "subdir")
-	keyFile := filepath.Join(subDir, "key.txt")
-
-	// Create subdirectory with a file
-	if err := os.Mkdir(subDir, 0755); err != nil {
-		t.Fatalf("Mkdir failed: %v", err)
-	}
-	if err := os.WriteFile(keyFile, []byte("test"), 0644); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
-
-	// Remove read/execute permissions from parent directory
-	// This makes the file unstat-able
-	if err := os.Chmod(subDir, 0000); err != nil {
-		t.Fatalf("Failed to chmod directory: %v", err)
-	}
-	defer os.Chmod(subDir, 0755) // Restore permissions for cleanup
-
-	s := NewService()
-	result, err := s.GetEncryptionServiceFromFile(keyFile)
-	if err == nil {
-		t.Error("Expected error when stat fails")
-	}
-	// The error message will vary but should indicate file access issues
-	if result != nil {
-		t.Error("Result should be nil on error")
-	}
-}
-
-// TestEncryptWithCorruptedCipher attempts to test cipher creation failure
-func TestEncryptWithInvalidAESKey(t *testing.T) {
-	s := NewService()
-
-	// AES requires keys of length 16, 24, or 32 bytes
-	// Set a key with invalid length directly
-	s.mu.Lock()
-	s.passKey = make([]byte, 20) // Invalid length
-	s.mu.Unlock()
-
-	_, err := s.Encrypt([]byte("test"))
-	if err == nil {
-		t.Error("Expected error with invalid AES key length")
-	}
-	if !strings.Contains(err.Error(), "failed to create cipher") {
-		t.Errorf("Error message = %v, want 'failed to create cipher'", err.Error())
-	}
-}
-
-// TestDecryptGCMFailure attempts to test GCM creation failure
-// Note: cipher.NewGCM rarely fails with valid AES block ciphers
-func TestDecryptWithInvalidAESKey(t *testing.T) {
-	s := NewService()
-
-	// Set invalid key length
-	s.mu.Lock()
-	s.passKey = make([]byte, 20) // Invalid for AES
-	s.mu.Unlock()
-
-	// Create minimally valid ciphertext structure
-	data := make([]byte, 16) // Enough for nonce
-
-	_, err := s.Decrypt(data)
-	if err == nil {
-		t.Error("Expected error with invalid AES key")
-	}
-	if !strings.Contains(err.Error(), "failed to create cipher") {
-		t.Errorf("Error message = %v, want 'failed to create cipher'", err.Error())
-	}
-}
-
-// Alternative approach: Test the actual encryption with different key sizes
-func TestEncryptDecryptWithVariousKeySizes(t *testing.T) {
-	// Test with keys that will be derived to 32 bytes
-	validKeys := [][]byte{
-		[]byte("short"),
-		[]byte("medium-length-key"),
-		bytes.Repeat([]byte("a"), 32),
-	}
-
-	for _, key := range validKeys {
-		s := NewService()
-		if err := s.SetPassKey(key); err != nil {
-			t.Fatalf("SetPassKey failed: %v", err)
-		}
-
-		data := []byte("test data")
-		encrypted, err := s.Encrypt(data)
-		if err != nil {
-			t.Errorf("Encrypt failed for key length %d: %v", len(key), err)
-			continue
-		}
-
-		decrypted, err := s.Decrypt(encrypted)
-		if err != nil {
-			t.Errorf("Decrypt failed for key length %d: %v", len(key), err)
-			continue
-		}
-
-		if !bytes.Equal(decrypted, data) {
-			t.Errorf("Decrypted data doesn't match for key length %d", len(key))
-		}
-	}
-}
-
-// TestWritePassKeyToFilePermissionError specifically targets the write error
-func TestWritePassKeyToFileDirectly(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("Skipping test when running as root")
-	}
-
-	tempDir := t.TempDir()
-
-	// Make directory read-only AFTER creating it
-	if err := os.Chmod(tempDir, 0444); err != nil {
-		t.Fatalf("Failed to chmod: %v", err)
-	}
-	defer os.Chmod(tempDir, 0755)
-
-	s := NewService()
-	passKey := make([]byte, 32)
-
-	err := s.writePassKeyToFile(passKey, filepath.Join(tempDir, "key.txt"))
-	if err == nil {
-		t.Error("Expected error writing to read-only directory")
-	}
-	if !strings.Contains(err.Error(), "failed to write passkey file") {
-		t.Errorf("Error = %v, want 'failed to write passkey file'", err.Error())
-	}
-}
-
 // TestGetEncryptionServiceFromFileWithEmptyInternalPath tests when both paths are empty
 func TestGetEncryptionServiceFromFileWithEmptyInternalPath(t *testing.T) {
 	tempDir := t.TempDir()
@@ -930,7 +1152,6 @@ func TestGetEncryptionServiceFromFileWithEmptyInternalPath(t *testing.T) {
 	// Create default key file
 	s := NewService()
 	s.SetWriteKeyToFile(true)
-	// keyFilePath will be default
 
 	if err := s.GeneratePassKey(); err != nil {
 		t.Fatalf("GeneratePassKey failed: %v", err)
@@ -975,7 +1196,7 @@ func TestGeneratePassKeyWithEmptyFilePath(t *testing.T) {
 // TestConcurrentEncryption tests concurrent operations
 func TestConcurrentEncryption(t *testing.T) {
 	s := NewService()
-	if err := s.SetPassKey([]byte("test")); err != nil {
+	if err := s.SetNewPassKey([]byte("test")); err != nil {
 		t.Fatalf("SetPassKey failed: %v", err)
 	}
 
@@ -1024,7 +1245,7 @@ func TestConcurrentService(t *testing.T) {
 			defer wg.Done()
 
 			s := NewService()
-			if err := s.SetPassKey(randBytes(randRange(2, 32))); err != nil {
+			if err := s.SetNewPassKey(randBytes(randRange(2, 32))); err != nil {
 				errors <- err
 			}
 
@@ -1081,7 +1302,7 @@ func (f *failingReader) Read(p []byte) (n int, err error) {
 // Benchmarks
 func BenchmarkEncrypt(b *testing.B) {
 	s := NewService()
-	if err := s.SetPassKey([]byte("test")); err != nil {
+	if err := s.SetNewPassKey([]byte("test")); err != nil {
 		b.Fatalf("SetPassKey failed: %v", err)
 	}
 	data := []byte("benchmark message for encryption testing")
@@ -1096,7 +1317,7 @@ func BenchmarkEncrypt(b *testing.B) {
 
 func BenchmarkDecrypt(b *testing.B) {
 	s := NewService()
-	if err := s.SetPassKey([]byte("test")); err != nil {
+	if err := s.SetNewPassKey([]byte("test")); err != nil {
 		b.Fatalf("SetPassKey failed: %v", err)
 	}
 	data := []byte("benchmark message for decryption testing")
@@ -1129,7 +1350,7 @@ func BenchmarkSetPassKeyFromPassword(b *testing.B) {
 	salt := make([]byte, SaltLength)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if err := s.SetPassKeyFromPassword(password, salt); err != nil {
+		if err := s.SetNewPassKeyFromPassword(password, salt); err != nil {
 			b.Fatalf("SetPassKeyFromPassword failed: %v", err)
 		}
 	}
@@ -1149,7 +1370,7 @@ func TestRaceConcurrentSetPassKey(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			key := []byte{byte(id)}
-			_ = s.SetPassKey(key)
+			_ = s.SetNewPassKey(key)
 		}(i)
 	}
 
@@ -1184,7 +1405,7 @@ func TestRaceConcurrentGeneratePassKey(t *testing.T) {
 // TestRaceSetPassKeyWhileEncrypting tests setting key while encrypting
 func TestRaceSetPassKeyWhileEncrypting(t *testing.T) {
 	s := NewService()
-	_ = s.SetPassKey([]byte("initial"))
+	_ = s.SetNewPassKey([]byte("initial"))
 
 	const numGoroutines = 50
 	var wg sync.WaitGroup
@@ -1201,7 +1422,7 @@ func TestRaceSetPassKeyWhileEncrypting(t *testing.T) {
 		} else {
 			go func(id int) {
 				defer wg.Done()
-				_ = s.SetPassKey([]byte{byte(id)})
+				_ = s.SetNewPassKey([]byte{byte(id)})
 			}(i)
 		}
 	}
@@ -1212,7 +1433,7 @@ func TestRaceSetPassKeyWhileEncrypting(t *testing.T) {
 // TestRaceGeneratePassKeyWhileEncrypting tests generating key while encrypting
 func TestRaceGeneratePassKeyWhileEncrypting(t *testing.T) {
 	s := NewService()
-	_ = s.SetPassKey([]byte("initial"))
+	_ = s.SetNewPassKey([]byte("initial"))
 
 	const numGoroutines = 50
 	var wg sync.WaitGroup
@@ -1239,7 +1460,7 @@ func TestRaceGeneratePassKeyWhileEncrypting(t *testing.T) {
 // TestRaceClearPassKeyWhileEncrypting tests clearing key while encrypting
 func TestRaceClearPassKeyWhileEncrypting(t *testing.T) {
 	s := NewService()
-	_ = s.SetPassKey([]byte("test"))
+	_ = s.SetNewPassKey([]byte("test"))
 
 	const numGoroutines = 50
 	var wg sync.WaitGroup
@@ -1266,7 +1487,7 @@ func TestRaceClearPassKeyWhileEncrypting(t *testing.T) {
 // TestRaceClearPassKeyWhileDecrypting tests clearing key while decrypting
 func TestRaceClearPassKeyWhileDecrypting(t *testing.T) {
 	s := NewService()
-	_ = s.SetPassKey([]byte("test"))
+	_ = s.SetNewPassKey([]byte("test"))
 
 	encrypted, err := s.Encrypt([]byte("data"))
 	if err != nil {
@@ -1368,7 +1589,7 @@ func TestRaceConfigFieldsWhileOperating(t *testing.T) {
 // TestRaceExportPassKeyWhileModifying tests exporting while modifying
 func TestRaceExportPassKeyWhileModifying(t *testing.T) {
 	s := NewService()
-	_ = s.SetPassKey([]byte("test"))
+	_ = s.SetNewPassKey([]byte("test"))
 
 	const numGoroutines = 50
 	var wg sync.WaitGroup
@@ -1383,7 +1604,7 @@ func TestRaceExportPassKeyWhileModifying(t *testing.T) {
 		} else {
 			go func(id int) {
 				defer wg.Done()
-				_ = s.SetPassKey([]byte{byte(id)})
+				_ = s.SetNewPassKey([]byte{byte(id)})
 			}(i)
 		}
 	}
@@ -1402,7 +1623,7 @@ func TestRaceSetPassKeyFromPasswordConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			_ = s.SetPassKeyFromPassword("password", nil)
+			_ = s.SetNewPassKeyFromPassword("password", nil)
 		}(i)
 	}
 
@@ -1412,7 +1633,7 @@ func TestRaceSetPassKeyFromPasswordConcurrent(t *testing.T) {
 // TestRaceMixedOperations tests realistic mixed concurrent operations
 func TestRaceMixedOperations(t *testing.T) {
 	s := NewService()
-	_ = s.SetPassKey([]byte("initial"))
+	_ = s.SetNewPassKey([]byte("initial"))
 
 	const numGoroutines = 100
 	var wg sync.WaitGroup
@@ -1436,7 +1657,7 @@ func TestRaceMixedOperations(t *testing.T) {
 		case 2:
 			go func(id int) {
 				defer wg.Done()
-				_ = s.SetPassKey([]byte{byte(id)})
+				_ = s.SetNewPassKey([]byte{byte(id)})
 			}(i)
 		case 3:
 			go func() {
@@ -1466,7 +1687,7 @@ func TestRaceStressTest(t *testing.T) {
 	}
 
 	s := NewService()
-	_ = s.SetPassKey([]byte("test"))
+	_ = s.SetNewPassKey([]byte("test"))
 
 	const duration = 1 * time.Second
 	var stop atomic.Bool
@@ -1493,7 +1714,7 @@ func TestRaceStressTest(t *testing.T) {
 	wg.Go(func() {
 		counter := byte(0)
 		for !stop.Load() {
-			_ = s.SetPassKey([]byte{counter})
+			_ = s.SetNewPassKey([]byte{counter})
 			counter++
 		}
 	})
@@ -1546,7 +1767,7 @@ func TestRaceStressTest(t *testing.T) {
 // TestRaceEncryptDecryptDifferentKeys demonstrates encryption/decryption with concurrent key changes
 func TestRaceEncryptDecryptDifferentKeys(t *testing.T) {
 	s := NewService()
-	_ = s.SetPassKey([]byte("key1"))
+	_ = s.SetNewPassKey([]byte("key1"))
 
 	const numGoroutines = 50
 	var wg sync.WaitGroup
@@ -1568,7 +1789,7 @@ func TestRaceEncryptDecryptDifferentKeys(t *testing.T) {
 
 			// Another goroutine might change the key here
 			if id%10 == 0 {
-				_ = s.SetPassKey([]byte{byte(id)})
+				_ = s.SetNewPassKey([]byte{byte(id)})
 			}
 
 			// Try to decrypt

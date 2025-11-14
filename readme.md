@@ -9,9 +9,10 @@ A lightweight, secure, and fast encryption service for Go applications using AES
 ## ✨ Features
 
 - 🔒 **AES-256-GCM Encryption** - Industry-standard authenticated encryption
-- 🔑 **Flexible Key Management** - Support for random keys, user passwords, and file-based keys
+- 🔑 **Flexible Key Management** - Support for random keys, user passwords, exported keys, and file-based keys
 - 🛡️ **PBKDF2 Key Derivation** - Secure password-to-key transformation
 - 📁 **Secure File Storage** - Keys stored with restrictive permissions (0600)
+- 🔄 **Key Export/Import** - Safely share keys across services or persist for later use
 - ⚡ **High Performance** - Optimized for speed with minimal overhead
 - 🧵 **Thread-Safe** - 100% safe for concurrent operations with comprehensive race testing
 - ✅ **Comprehensive Testing** - 95%+ test coverage with benchmarks and race detection
@@ -62,8 +63,8 @@ func main() {
     // Create a new encryption service
     service := encryptor.NewService()
     
-    // Set a passkey (will be automatically padded/derived to 32 bytes)
-    if err := service.SetPassKey([]byte("my-secret-key")); err != nil {
+    // Set a passkey (will be automatically derived to 32 bytes using PBKDF2)
+    if err := service.SetNewPassKey([]byte("my-secret-key")); err != nil {
         log.Fatal(err)
     }
     
@@ -102,12 +103,74 @@ service := encryptor.NewService()
 
 // Derive a secure key from a password using PBKDF2
 password := "user-password-123"
-if err := service.SetPassKeyFromPassword(password, nil); err != nil {
+if err := service.SetNewPassKeyFromPassword(password, nil); err != nil {
     log.Fatal(err)
 }
 
 encrypted, err := service.Encrypt([]byte("sensitive data"))
 ```
+
+### Key Export and Import
+
+```go
+// Export a key from one service
+service1 := encryptor.NewService()
+service1.GeneratePassKey()
+
+exportedKey, err := service1.ExportPassKey()
+if err != nil {
+    log.Fatal(err)
+}
+
+// Import the key into another service
+service2 := encryptor.NewService()
+if err := service2.SetExportedKey(exportedKey); err != nil {
+    log.Fatal(err)
+}
+
+// Both services can now encrypt/decrypt each other's data
+message := []byte("shared secret")
+encrypted, _ := service1.Encrypt(message)
+decrypted, _ := service2.Decrypt(encrypted)
+// decrypted == message
+```
+
+#### Key Export/Import Use Cases
+
+1. **Distributed Systems** - Share keys across multiple servers
+   ```go
+   // Central key management
+   masterKey, _ := masterService.ExportPassKey()
+   
+   // Distribute to worker nodes
+   for _, worker := range workers {
+       worker.SetExportedKey(masterKey)
+   }
+   ```
+
+2. **Key Persistence** - Store derived keys for reuse
+   ```go
+   // Derive once from password
+   service.SetNewPassKeyFromPassword("user-password", nil)
+   derivedKey, _ := service.ExportPassKey()
+   
+   // Store in secure storage (e.g., encrypted database)
+   db.StoreKey(userID, derivedKey)
+   
+   // Later: Load and use without re-deriving
+   storedKey := db.LoadKey(userID)
+   newService.SetExportedKey(storedKey)
+   ```
+
+3. **Key Migration** - Move between different storage mechanisms
+   ```go
+   // Load from file
+   oldService, _ := encryptor.LoadEncryptionServiceFromFile("key.txt")
+   key, _ := oldService.ExportPassKey()
+   
+   // Store in database
+   database.SaveKey(key)
+   ```
 
 ### Persistent Key Storage
 
@@ -236,7 +299,7 @@ $ ./encryptor -op encrypt -file test.txt -v
     ███████╗██║ ╚████║╚██████╗██║  ██║   ██║   ██║        ██║   ╚██████╔╝██║  ██║
     ╚══════╝╚═╝  ╚═══╝ ╚═════╝╚═╝  ╚═╝   ╚═╝   ╚═╝        ╚═╝    ╚═════╝ ╚═╝  ╚═╝
                                                          
-         🔐 Secure File Encryption Tool v1.0.0
+         🔐 Secure File Encryption Tool v1.1.0
                                                          
 =========================================================
 
@@ -345,15 +408,52 @@ echo "Backup completed and encrypted successfully!"
 #### `NewService() *Service`
 Creates a new encryption service with default settings.
 
-#### `SetPassKey(key []byte) error`
-Sets the encryption key. Keys shorter than 32 bytes are securely derived using PBKDF2.
+#### `SetNewPassKey(key []byte) error`
+Sets the encryption key with automatic PBKDF2 derivation. Keys are securely derived to 32 bytes.
 
 **Parameters:**
 - `key` - Encryption key (max 32 bytes)
 
 **Returns:** Error if key is empty or exceeds 32 bytes
 
-#### `SetPassKeyFromPassword(password string, salt []byte) error`
+**Note:** This method derives the key using PBKDF2. To set a pre-derived or exported key without derivation, use `SetExportedKey()`.
+
+#### `SetExportedKey(key []byte) error`
+Sets a pre-derived encryption key without additional derivation. Use this for importing previously exported keys.
+
+**Parameters:**
+- `key` - Pre-derived encryption key (16, 24, or 32 bytes for AES-128, AES-192, or AES-256)
+
+**Returns:** 
+- `ErrEmptyPassKey` if key is empty
+- `ErrKeyTooShort` if key is less than 16 bytes
+- `ErrPassKeyTooLong` if key exceeds 32 bytes
+
+**Important:** Unlike `SetNewPassKey()`, this method does NOT derive the key. Use it for:
+- Importing keys exported via `ExportPassKey()`
+- Loading pre-derived keys from secure storage
+- Sharing keys across multiple service instances
+
+```go
+// Example: Don't mix SetNewPassKey and SetExportedKey
+password := []byte("my-password-1234")
+
+s1 := encryptor.NewService()
+s1.SetNewPassKey(password)  // Derives key using PBKDF2
+encrypted, _ := s1.Encrypt(data)
+
+s2 := encryptor.NewService()
+s2.SetExportedKey(password)  // Uses password directly (NO derivation)
+// s2.Decrypt(encrypted) will FAIL - keys don't match!
+
+// Correct approach: Export the derived key
+derivedKey, _ := s1.ExportPassKey()
+s3 := encryptor.NewService()
+s3.SetExportedKey(derivedKey)  // Now keys match
+decrypted, _ := s3.Decrypt(encrypted)  // SUCCESS
+```
+
+#### `SetNewPassKeyFromPassword(password string, salt []byte) error`
 Derives a secure 32-byte key from a password using PBKDF2 with 100,000 iterations.
 
 **Parameters:**
@@ -386,7 +486,9 @@ Generates a cryptographically secure random 32-byte key.
 #### `ExportPassKey() ([]byte, error)`
 Returns a **copy** of the current encryption key. Use with caution.
 
-**Returns:** Key copy, or error if key not set
+**Returns:** Key copy, or `ErrPassKeyNotSet` if key not set
+
+**Security Note:** The exported key is a copy, so modifying it won't affect the service's internal key. However, treat exported keys with the same security as passwords.
 
 #### `ClearPassKey()`
 Securely zeros out the key from memory.
@@ -433,11 +535,25 @@ service.SetKeyFilePath("/secure/path/encryption.key")
 
 ```go
 const (
-    KeyByteLength         = 32      // AES-256 key size
+    KeyByteLength          = 32      // AES-256 key size
+    MinKeyByteLength       = 16      // Minimum key size (AES-128)
     DefaultPassKeyFileName = "passkey.txt"
-    FilePermissions       = 0600    // Owner read/write only
-    PBKDF2Iterations      = 100000  // Key derivation iterations
-    SaltLength            = 16      // Salt size in bytes
+    FilePermissions        = 0600    // Owner read/write only
+    PBKDF2Iterations       = 100000  // Key derivation iterations
+    SaltLength             = 16      // Salt size in bytes
+)
+```
+
+### Error Constants
+
+```go
+var (
+    ErrEmptyPassKey      = errors.New("passkey cannot be empty")
+    ErrPassKeyTooLong    = errors.New("passkey exceeds maximum length of 32 bytes")
+    ErrKeyTooShort       = errors.New("key must be at least 16 bytes for AES-128")
+    ErrEmptyData         = errors.New("data cannot be empty")
+    ErrInvalidCiphertext = errors.New("ciphertext too short")
+    ErrPassKeyNotSet     = errors.New("passkey not set")
 )
 ```
 
@@ -453,6 +569,7 @@ const (
 - **Secure Random Generation** - Uses `crypto/rand` for key generation
 - **Memory Protection** - `ClearPassKey()` zeros memory before cleanup
 - **File Permissions** - Keys stored with 0600 (owner-only access)
+- **Key Export/Import** - Safely share keys with proper copying to prevent external modification
 
 ### Thread Safety
 - **Full Concurrency Support** - All operations are thread-safe with optimized locking
@@ -466,7 +583,9 @@ const (
 ✅ Use password-based keys with strong, unique passwords  
 ✅ Call `ClearPassKey()` when done with sensitive operations  
 ✅ Never log or transmit raw encryption keys  
-✅ Safe for concurrent use in multi-threaded applications
+✅ Safe for concurrent use in multi-threaded applications  
+✅ Use `SetExportedKey()` only for pre-derived keys, never for passwords  
+✅ Export keys only when necessary and handle them as securely as passwords
 
 ## ⚡ Performance
 
@@ -474,26 +593,26 @@ const (
 
 | Operation | Speed | Throughput |
 |-----------|-------|------------|
-| Encrypt | 628 ns/op | ~1.6M ops/sec |
-| Decrypt | 531 ns/op | ~1.9M ops/sec |
-| Key Generation | 91 ns/op | ~11M ops/sec |
-| Password Derivation | 11.2 ms/op | Security feature |
+| Encrypt | 557 ns/op | ~1.8M ops/sec |
+| Decrypt | 488 ns/op | ~2.0M ops/sec |
+| Key Generation | 92 ns/op | ~10.9M ops/sec |
+| Password Derivation | 11.8 ms/op | Security feature |
 
 Benchmarks on Intel Core i9-14900HX (with thread-safe locking):
 
 ```
 TEST_NAME                             ITERATIONS  AVG_ITER_DURATION    MEMORY_USED  NUM_MEMORY_ALLOCATIONS
-BenchmarkEncrypt-32                      1883298        627.6 ns/op      1376 B/op       4 allocs/op
-BenchmarkDecrypt-32                      2254128        531.4 ns/op      1328 B/op       3 allocs/op
-BenchmarkGeneratePassKey-32             13150389        91.21 ns/op        32 B/op       1 allocs/op
-BenchmarkSetPassKeyFromPassword-32           100     11237741 ns/op       788 B/op      11 allocs/op
+BenchmarkEncrypt-32                      2168189        556.7 ns/op      1376 B/op       4 allocs/op
+BenchmarkDecrypt-32                      2448208        487.6 ns/op      1328 B/op       3 allocs/op
+BenchmarkGeneratePassKey-32             12290386        92.06 ns/op        32 B/op       1 allocs/op
+BenchmarkSetPassKeyFromPassword-32            99     11848985 ns/op       788 B/op      11 allocs/op
 ```
 
 **Performance Highlights:**
-- ⚡ **Encryption**: ~628 ns/op (~1.6 million ops/sec) - Thread-safe with minimal overhead
-- ⚡ **Decryption**: ~531 ns/op (~1.9 million ops/sec) - Optimized concurrent access
-- ⚡ **Key Generation**: ~91 ns/op (~11 million ops/sec) - Lock-free random generation
-- 🔐 **Password Derivation**: ~11.2 ms/op (intentionally slow for security - 100k PBKDF2 iterations)
+- ⚡ **Encryption**: ~557 ns/op (~1.8 million ops/sec) - Thread-safe with minimal overhead
+- ⚡ **Decryption**: ~488 ns/op (~2.0 million ops/sec) - Optimized concurrent access
+- ⚡ **Key Generation**: ~92 ns/op (~10.9 million ops/sec) - Lock-free random generation
+- 🔐 **Password Derivation**: ~11.8 ms/op (intentionally slow for security - 100k PBKDF2 iterations)
 
 **Thread-Safety Impact:**
 The implementation uses optimized read-write locking (`sync.RWMutex`) for safe concurrent access:
@@ -501,7 +620,7 @@ The implementation uses optimized read-write locking (`sync.RWMutex`) for safe c
 - Write operations (key setting) have minimal lock duration
 - Expensive cryptographic operations performed outside critical sections
 - The baseline implementation was highly optimized (~420ns per encryption), operating near the theoretical limits of AES-GCM performance. Even minimal synchronization overhead becomes proportionally significant at this performance tier
-- Despite the relative overhead, absolute performance remains exceptional at ~1.6-1.9 million operations per second, making this trade-off worthwhile for production applications requiring concurrent access
+- Despite the relative overhead, absolute performance remains exceptional at ~1.8-2.0 million operations per second, making this trade-off worthwhile for production applications requiring concurrent access
 
 **Note**: Password-based key derivation is intentionally slow to protect against brute-force attacks. This is a security feature, not a performance issue.
 
@@ -570,11 +689,15 @@ go test -race -v -run TestRaceStressTest
    - `TestRaceConfigFieldsWhileOperating` - Concurrent config changes during operations
    - `TestRaceExportPassKeyWhileModifying` - Exporting key while modifying
 
-5. **Mixed Operations**
+
+5. **Export/Import Operations**
+   - `TestRaceExportPassKeyWhileModifying` - Exporting key while modifying
+
+6. **Mixed Operations**
    - `TestRaceMixedOperations` - Realistic concurrent usage patterns
    - `TestRaceStressTest` - Intensive continuous operations for 1 second
 
-6. **Different Keys Scenario**
+7. **Different Keys Scenario**
    - `TestRaceEncryptDecryptDifferentKeys` - Encryption/decryption with concurrent key changes
 
 ### Continuous Integration Testing
@@ -596,6 +719,7 @@ The package maintains 95%+ test coverage across:
 - ✅ File I/O operations
 - ✅ Race conditions
 - ✅ Memory safety
+- ✅ Key export/import workflows
 
 ### Performance Testing
 
@@ -704,46 +828,60 @@ func encryptFile(inputPath, outputPath, keyPath string) error {
 }
 ```
 
-### Example 2: Multi-User Encryption (Thread-Safe)
+### Example 2: Distributed System with Shared Keys
 
 ```go
 package main
 
 import (
-    "sync"
-    
     "github.com/AlexanderEl/encryptor"
 )
 
-type UserEncryptor struct {
-    mu       sync.RWMutex
-    services map[string]*encryptor.Service
+// Central key management service
+type KeyManager struct {
+    masterService *encryptor.Service
+    masterKey     []byte
 }
 
-func NewUserEncryptor() *UserEncryptor {
-    return &UserEncryptor{
-        services: make(map[string]*encryptor.Service),
+func NewKeyManager() (*KeyManager, error) {
+    service := encryptor.NewService()
+    if err := service.GeneratePassKey(); err != nil {
+        return nil, err
     }
+    
+    key, err := service.ExportPassKey()
+    if err != nil {
+        return nil, err
+    }
+    
+    return &KeyManager{
+        masterService: service,
+        masterKey:     key,
+    }, nil
 }
 
-func (u *UserEncryptor) EncryptForUser(userID string, data []byte) ([]byte, error) {
-    u.mu.RLock()
-    service, exists := u.services[userID]
-    u.mu.RUnlock()
-    
-    if !exists {
-        service = encryptor.NewService()
-        if err := service.GeneratePassKey(); err != nil {
-            return nil, err
-        }
-        
-        u.mu.Lock()
-        u.services[userID] = service
-        u.mu.Unlock()
+// Distribute key to worker nodes
+func (km *KeyManager) CreateWorkerService() (*encryptor.Service, error) {
+    worker := encryptor.NewService()
+    if err := worker.SetExportedKey(km.masterKey); err != nil {
+        return nil, err
     }
+    return worker, nil
+}
+
+// Usage
+func main() {
+    manager, _ := NewKeyManager()
     
-    // Service itself is thread-safe
-    return service.Encrypt(data)
+    // Create multiple workers with same key
+    worker1, _ := manager.CreateWorkerService()
+    worker2, _ := manager.CreateWorkerService()
+    
+    // All can encrypt/decrypt each other's data
+    data := []byte("shared message")
+    encrypted, _ := worker1.Encrypt(data)
+    decrypted, _ := worker2.Decrypt(encrypted)
+    // decrypted == data
 }
 ```
 
@@ -772,7 +910,8 @@ func getServiceFromEnv() (*encryptor.Service, error) {
     }
     
     service := encryptor.NewService()
-    if err := service.SetPassKey(key); err != nil {
+    // Use SetExportedKey for pre-derived keys
+    if err := service.SetExportedKey(key); err != nil {
         return nil, err
     }
     
@@ -832,6 +971,50 @@ func encryptMultipleFiles(files []string, service *encryptor.Service) error {
 }
 ```
 
+### Example 5: Key Rotation Strategy
+
+```go
+package main
+
+import (
+    "github.com/AlexanderEl/encryptor"
+)
+
+type EncryptionService struct {
+    current *encryptor.Service
+    old     *encryptor.Service
+}
+
+// Rotate to a new key while keeping old key for decryption
+func (es *EncryptionService) RotateKey() error {
+    newService := encryptor.NewService()
+    if err := newService.GeneratePassKey(); err != nil {
+        return err
+    }
+    
+    // Keep old service for decrypting old data
+    es.old = es.current
+    es.current = newService
+    
+    return nil
+}
+
+// Encrypt always uses current key
+func (es *EncryptionService) Encrypt(data []byte) ([]byte, error) {
+    return es.current.Encrypt(data)
+}
+
+// Decrypt tries current key, falls back to old key
+func (es *EncryptionService) Decrypt(data []byte) ([]byte, error) {
+    decrypted, err := es.current.Decrypt(data)
+    if err != nil && es.old != nil {
+        // Try old key if current fails
+        return es.old.Decrypt(data)
+    }
+    return decrypted, err
+}
+```
+
 ## ❌ Error Handling
 
 The service defines several sentinel errors for clear error handling:
@@ -840,6 +1023,7 @@ The service defines several sentinel errors for clear error handling:
 var (
     ErrEmptyPassKey      = errors.New("passkey cannot be empty")
     ErrPassKeyTooLong    = errors.New("passkey exceeds maximum length of 32 bytes")
+    ErrKeyTooShort       = errors.New("key must be at least 16 bytes for AES-128")
     ErrEmptyData         = errors.New("data cannot be empty")
     ErrInvalidCiphertext = errors.New("ciphertext too short")
     ErrPassKeyNotSet     = errors.New("passkey not set")
@@ -858,6 +1042,9 @@ if errors.Is(err, encryptor.ErrPassKeyNotSet) {
 } else if errors.Is(err, encryptor.ErrInvalidCiphertext) {
     // Handle corrupted data
     log.Println("Data appears to be corrupted")
+} else if errors.Is(err, encryptor.ErrKeyTooShort) {
+    // Handle key size validation errors
+    log.Println("Key must be at least 16 bytes")
 }
 ```
 
@@ -920,7 +1107,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ✅ Protecting sensitive configuration  
 ✅ Secure file storage  
 ✅ Application-level encryption  
-✅ Multi-threaded/concurrent applications
+✅ Multi-threaded/concurrent applications  
+✅ Distributed systems requiring shared encryption keys
 
 ### When NOT to Use This Library
 ❌ TLS/SSL connections (use `crypto/tls`)  
@@ -935,6 +1123,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **Compliance**: Ensure your use case complies with relevant regulations (GDPR, HIPAA, etc.).
 - **Threat Model**: This library protects data at rest. It does not protect against attacks on the running process.
 - **Thread Safety**: All operations are safe for concurrent use, but key management operations will briefly block other operations.
+- **Key Export**: Exported keys should be handled with the same security precautions as passwords. Use secure channels for transmission and encrypted storage for persistence.
+- **SetExportedKey vs SetNewPassKey**: Never use `SetExportedKey()` with raw passwords. It's designed for pre-derived or exported keys only. For passwords, always use `SetNewPassKeyFromPassword()`.
 
 ## 🗺️ Roadmap
 
@@ -944,12 +1134,22 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [ ] Support for multiple encryption algorithms
 - [ ] Built-in key management service integration (AWS KMS, Vault)
 - [ ] Add context support for cancellable operations
+- [x] Key export/import functionality for distributed systems
 - [x] Provide CLI tool for file encryption
 - [x] 100% thread-safe implementation with comprehensive race testing
 
 ## 📊 Version History
 
-### v1.0.1 (Current)
+### v1.1.0 (Current)
+- ✨ **NEW**: Key export/import functionality via `ExportPassKey()` and `SetExportedKey()`
+- 🔄 Support for sharing keys across distributed systems
+- 🔑 Distinguish between derived keys (`SetNewPassKey`) and raw keys (`SetExportedKey`)
+- 📝 Added comprehensive examples for key export/import workflows
+- 🧪 Extended test coverage for key export/import scenarios
+- 📚 Updated documentation with key management best practices
+- 🐛 Added validation for minimum key size (16 bytes for AES-128)
+
+### v1.0.1
 - ✨ 100% thread-safe code with optimized locking strategy
 - 🧪 Comprehensive race condition test suite (15+ race-specific tests)
 - 🔒 Thread-safe configuration getters/setters
