@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  encryptor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: encryptor:latest
+    container_name: encryptor
+    volumes:
+      # Mount local directory for keys
+      - ./keys:/home/encryptor/keys
+      # Mount local directory for files to encrypt/decrypt
+      - ./data:/home/encryptor/data
+    command: ["-version"]
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+
+  # Development environment with hot reload
+  encryptor-dev:
+    image: golang:1.22-alpine
+    container_name: encryptor-dev
+    working_dir: /app
+    volumes:
+      - .:/app
+    command: sh -c "go mod download && go run ./cmd/encryptor -version"
+    environment:
+      - CGO_ENABLED=0
+
+volumes:
+  keys:
+    driver: local
+  data:
+    driver: local

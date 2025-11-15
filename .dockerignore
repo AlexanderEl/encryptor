@@ -1,0 +1,39 @@
+# Git
+.git
+.gitignore
+.github
+
+# Build artifacts
+encryptor
+encryptor-*
+*.exe
+coverage.out
+coverage.html
+bench-*.txt
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Test files
+*_test.go
+testdata
+
+# Documentation
+*.md
+!README.md
+LICENSE
+
+# Keys and sensitive data
+*.key
+*.txt
+passkey.txt
+keys/
+data/
+
+# Misc
+.DS_Store
+Thumbs.db

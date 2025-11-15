@@ -1,0 +1,149 @@
+project_name: encryptor
+
+before:
+  hooks:
+    - go mod tidy
+    - go test -race ./...
+
+builds:
+  - id: encryptor
+    main: ./cmd/encryptor
+    binary: encryptor
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+      - arm
+    goarm:
+      - 6
+      - 7
+    ignore:
+      - goos: windows
+        goarch: arm
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
+archives:
+  - id: encryptor
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - README.md
+      - LICENSE
+      - CHANGELOG.md
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  name_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - Merge pull request
+      - Merge branch
+  groups:
+    - title: 'New Features'
+      regexp: "^.*feat[(\\w)]*:+.*$"
+      order: 0
+    - title: 'Bug Fixes'
+      regexp: "^.*fix[(\\w)]*:+.*$"
+      order: 1
+    - title: 'Performance Improvements'
+      regexp: "^.*perf[(\\w)]*:+.*$"
+      order: 2
+    - title: 'Security'
+      regexp: "^.*security[(\\w)]*:+.*$"
+      order: 3
+    - title: 'Other Changes'
+      order: 999
+
+release:
+  github:
+    owner: AlexanderEl
+    name: encryptor
+  draft: false
+  prerelease: auto
+  name_template: "v{{.Version}}"
+  header: |
+    ## Encryptor {{.Version}}
+
+    Release notes for version {{.Version}}.
+  footer: |
+    ---
+    **Full Changelog**: https://github.com/AlexanderEl/encryptor/compare/{{ .PreviousTag }}...{{ .Tag }}
+
+    ## Installation
+
+    ### Using Go
+    ```bash
+    go install github.com/AlexanderEl/encryptor/cmd/encryptor@{{ .Tag }}
+    ```
+
+    ### Download Binary
+    Download the appropriate binary for your platform from the assets below.
+
+announce:
+  skip: false
+
+# Optional: Build and publish Docker images
+dockers:
+  - image_templates:
+      - "ghcr.io/alexanderel/encryptor:{{ .Version }}-amd64"
+      - "ghcr.io/alexanderel/encryptor:latest-amd64"
+    use: buildx
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.created={{.Date}}"
+      - "--label=org.opencontainers.image.title={{.ProjectName}}"
+      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+
+  - image_templates:
+      - "ghcr.io/alexanderel/encryptor:{{ .Version }}-arm64"
+      - "ghcr.io/alexanderel/encryptor:latest-arm64"
+    use: buildx
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.created={{.Date}}"
+      - "--label=org.opencontainers.image.title={{.ProjectName}}"
+      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+    goarch: arm64
+
+docker_manifests:
+  - name_template: "ghcr.io/alexanderel/encryptor:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/alexanderel/encryptor:{{ .Version }}-amd64"
+      - "ghcr.io/alexanderel/encryptor:{{ .Version }}-arm64"
+
+  - name_template: "ghcr.io/alexanderel/encryptor:latest"
+    image_templates:
+      - "ghcr.io/alexanderel/encryptor:latest-amd64"
+      - "ghcr.io/alexanderel/encryptor:latest-arm64"
