@@ -57,8 +57,19 @@ var (
 
 // Encryptor defines the interface for encryption operations
 type Encryptor interface {
-	// SetExportedKey sets an existing key (caution dangerous)
-	// This will override the existing key with incoming passKey - no key modification
+	// Setter of writeKeyToFile flag
+	SetWriteKeyToFile(write bool)
+
+	// Getter of writeKeyToFile flag
+	GetWriteKeyToFile() bool
+
+	// Setter of keyFilePath path
+	SetKeyFilePath(path string)
+
+	// Getter of keyFilePath path
+	GetKeyFilePath() string
+
+	// SetExportedKey overrides existing key (caution dangerous)
 	// Primary use case: decrypt data with exported key
 	SetExportedKey(key []byte) error
 
@@ -77,8 +88,14 @@ type Encryptor interface {
 	// GeneratePassKey generates a cryptographically secure random passkey
 	GeneratePassKey() error
 
+	// Initialize EncryptionService from a passkey file
+	GetEncryptionServiceFromFile(filePath string) (*Service, error)
+
 	// ExportPassKey returns the passkey (use with caution)
 	ExportPassKey() ([]byte, error)
+
+	// Clear existing passkey
+	ClearPassKey()
 }
 
 // Service implements the Encryptor interface
