@@ -113,4 +113,4 @@ We appreciate the security research community and will acknowledge security rese
 
 **PGP Key**: (Optional - add your PGP public key fingerprint here for encrypted communications)
 
-[email]: encryptor.heroics540@passinbox.com
+[email]: alexanderel.able734@passinbox.com
